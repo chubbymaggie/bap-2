@@ -1,0 +1,26 @@
+#!/bin/sh
+
+set -e
+
+FST=true
+for i in "$@"; do
+  if $FST; then
+    set --
+    FST=false
+  fi
+
+  case $i in
+    --*=*)
+      ARG=${i%%=*}
+      VAL=${i##*=}
+      set -- "$@" "$ARG" "$VAL"
+      ;;
+    *)
+      set -- "$@" "$i"
+      ;;
+  esac
+done
+
+[ -f setup.ml -a setup.ml -nt _oasis ] || oasis -quiet setup
+ocaml preconfig.ml
+ocaml setup.ml -configure "$@"

@@ -1,133 +1,154 @@
 # Overview
+
 [![Build Status](https://travis-ci.org/BinaryAnalysisPlatform/bap.svg?branch=master)](https://travis-ci.org/BinaryAnalysisPlatform/bap)
 
-`Bap` library provides basic facilities for doing binary analysis in OCaml.
+`Bap` library provides basic facilities for performing binary analysis in OCaml.
 
-# Install
+# <a name="Installation"></a>Installation
 
-## Installing dependencies
+## Installing `bap` dependencies
 
-The easiest way is to install packages using `opam` package manager:
+The easiest way to install the OCaml dependencies of `bap` is to use
+the `opam` package manager:
 
-```
- $ opam install core_kernel zarith
-```
-
-If you would like to use our serialization library, then please also
-install a `piqi` tool with the following invocation:
-
-```
- $ opam install piqi
+```bash
+$ opam install bitstring core_kernel zarith
 ```
 
-If you're using a development version, i.e., just cloned us from github,
-then you will also need an `oasis` tool, in order to create a build
+_Note:_ The most up-to-date source of our dependency list is in our travis
+automation script `.travis-ci.sh`. The variable `SYS_DEPENDS` lists dependencies
+that should be installed on your system using `apt-get`; the variable
+`OPAM_DEPENDS` lists dependencies that can be installed via `opam`.
+
+If you would like to use our serialization library, then please also install the
+`piqi` package as follows:
+
+```bash
+$ opam install piqi
+```
+
+If you are using a development version, e.g., you have just cloned this from
+github, then you will also need the `oasis` package in order to create a build
 environment.
 
+```bash
+$ opam install oasis
 ```
- $ opam install oasis
+
+We also recommend you install `utop` for running BAP.
+
+```bash
+$ opam install utop
 ```
+
+Finally, you need to now install LLVM.  LLVM often changes their APIs,
+so we have had to standardize against one.  BAP currently compiles
+against llvm-3.4, which we have confirmed works on OSX and Ubuntu.
 
 ## Compiling and installing `bap`
 
-After all dependencies are installed, we can start the actual
-build. In a development version you need to start with an `oasis
-setup` command. If you're building a released sources, then you can
-skip this section. Now, run the following triplet:
+Once all the dependencies of `bap` have been installed, we can start the actual
+build. Now, run the following commands:
 
-```
- $ ./configure --prefix=$(opam config var prefix)
- $ make
- $ make install
+```bash
+$ make
+$ make install
 ```
 
-`./configure` script will check that everything is OK, and will finish
-with errors if something goes wrong. So make sure, that you have
-checked its result.
+This will run take care to run all configuration scripts for you. If
+you want to provide some specific flags to `configure`, then you need
+either to invoke it manually with `./configure` or provide them to
+make using `BAPCONFIGUREFLAGS` environment variable.
 
-If you're already installed `bap_types` previously, then use
+Note: if you have chosen prefix that require super-user privileges,
+then you need to run `make install` using either `sudo`, e.g., `sudo
+make install` or switch to a super-user mode. Although it is not
+required, we suggest to install `bap` in to `opam` stack. In this case
+a proper prefix can be generated using `opam config var` command,
+e.g.,
 
+```bash
+./configure --prefix=$(opam config var prefix)
 ```
- $ make reinstall
-```
 
-command instead of `make install`. If it still complains, then try to
-remove old `bap_types` manually with a `ocamlfind remove bap_types`
-command.
+If you have installed `bap` previously, then use the command `make reinstall`
+instead of `make install`. However, this will *not* work if `setup.log` has been
+erased (by, for example, `git clean -fdx` or `make clean`). In that case, you
+can remove the old `bap` installation manually via the command `ocamlfind remove
+bap`.
 
-# Using
+# Usage
 
 ## Using from top-level
 
-It is a good idea to learn the library by playing in a top-level. If
-you have `utop` installed, then you can just use our fancy `baptop`
-script:
+It is a good idea to learn how to use our library by playing in an OCaml
+top-level. If you have installed `utop`, then you can just use our `baptop`
+script to run `utop` with `bap` extensions:
 
-```
- $ baptop
- utop # open Bap.Std;;
-```
-
-Now, you can play with `Bap`. For example:
-
-```
- utop # let x = Word.of_int32 0xDEADBEEFl;;
- val x : word = 0xDEADBEEF:32
- utop # let y = Word.of_int32 0xEFBEADDEl;;
- val y : word = 0xEFBEADDE:32
- let z = Word.Int.(!$x + !$y);;
- val z : Word.Int.t = Core_kernel.Result.Ok 0xCE6C6CCD:32
- utop # let z = Word.Int_exn.(x + y);;
- val z : word = 0xCE6C6CCD:32
- utop # Word.to_bytes x BigEndian |> Sequence.to_list;;
- - : word list = [0xDE:8; 0xAD:8; 0xBE:8; 0xEF:8]
+```bash
+$ baptop
 ```
 
-If you do not want to use `baptop` or `utop`, then you can just type
-the following in any ocaml top-level:
+Now, you can play with BAP. For example:
 
-```
- # #use "topfind";;
- # #require "bap.top";;
- # open Bap.Std;;
+```ocaml
+utop # open Bap.Std;;
+utop # let x = Word.of_int32 0xDEADBEEFl;;
+val x : word = 0xDEADBEEF:32
+utop # let y = Word.of_int32 0xEFBEADDEl;;
+val y : word = 0xEFBEADDE:32
+utop # let z = Word.Int.(!$x + !$y);;
+val z : Word.Int.t = Core_kernel.Result.Ok 0xCE6C6CCD:32
+utop # let z = Word.Int_exn.(x + y);;
+val z : word = 0xCE6C6CCD:32
+utop # Word.to_bytes x BigEndian |> Sequence.to_list;;
+- : word list = [0xDE:8; 0xAD:8; 0xBE:8; 0xEF:8]
 ```
 
-And everything should work just out of box, i.e. it will load all
+If you do not want to use `baptop` or `utop`, then you can execute the following
+in any OCaml top-level:
+
+```ocaml
+# #use "topfind";;
+# #require "bap.top";;
+# open Bap.Std;;
+```
+
+And everything should work just out of box, i.e. it will load all the
 dependencies, install top-level printers, etc.
 
+## Compiling your program with `bap`
 
-## Compiling with `bap`
+Similar to the top-level, you can use our `bapbuild` script to compile a program
+that uses `bap` without tackling with the build system. For example, if your
+program is `mycoolprog.ml`, then you can execute:
 
-As with top-level, you can use our script named `bapbuild` to start
-working without tackling with all this build systems. Just type
-
+```bash
+$ bapbuild mycoolprog.native
 ```
-  $ bapbuild mycoolprog.native
-```
 
-and everything should work just out-of-box. If `bapbuild` complains
-that he can't find something, then make sure that you didn't skip
-[Install] phase.
+and you will obtain `mycoolprog.native`. If `bapbuild` complains that something
+is missing, make sure that you didn't skip the [Installation](#Installation)
+phase. You can add your own dependencies with a `-package` command line option.
 
-When using your own build environment, then make sure, that you have
-added us as a dependency. We are installing as `ocamlfind`-enabled
-project named `bap`. For example, if you're using `oasis`,
-then just add `bap` to `BuildDepends` field. If you're using,
-ocamlbuild with ocamlfind plugin, then add `package(bap)` or
-`pkg_bap` to your `_tags` file.
+If you use your own build environment, please make sure that you have added
+`bap` as a dependency. We install our libraries using `ocamlfind` and you just
+need to add `bap` to your project. For example, if you use `oasis`, then you
+should add `bap` to the `BuildDepends` field. If you are using `ocamlbuild` with
+the `ocamlfind` plugin, then you should add `package(bap)` or `pkg_bap` to your
+`_tags` file.
 
-## Learning Bap
+## Learning BAP
 
 TBD
-
 
 # Development
 
 TBD
 
-
 # License
-Please see the LICENSE file for licensing information.
+
+Please see the `LICENSE` file for licensing information.
 
 # TODO
 
