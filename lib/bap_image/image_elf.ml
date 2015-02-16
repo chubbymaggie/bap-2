@@ -58,7 +58,7 @@ let create_symtab data endian elf  =
       let size = match Dwarf.Fn.pc_hi fn with
         | None -> return None
         | Some pc_hi ->
-          Addr.Int.(!$pc_hi - !$pc_lo) >>= Addr.to_int >>| fun size ->
+          Addr.Int_err.(!$pc_hi - !$pc_lo) >>= Addr.to_int >>| fun size ->
           Some size in
       size >>= fun size ->
       let location = Location.({
@@ -103,22 +103,35 @@ let create_section make_addr i es : Section.t Or_error.t option =
     | ok -> Some ok
 
 let addr_maker = function
-  | Word_size.W32 -> fun x -> Addr.of_int32 (Int64.to_int32_exn x)
-  | Word_size.W64 -> Addr.of_int64
+  | `r32 -> Addr.of_int64 ~width:32
+  | `r64 -> Addr.of_int64 ~width:64
 
 let img_of_elf data elf : Img.t Or_error.t =
   let endian = match elf.e_data with
     | ELFDATA2LSB -> LittleEndian
     | ELFDATA2MSB -> BigEndian in
   let addr_size = match elf.e_class with
-    | ELFCLASS32 -> Word_size.W32
-    | ELFCLASS64 -> Word_size.W64 in
+    | ELFCLASS32 -> `r32
+    | ELFCLASS64 -> `r64 in
   let addr = addr_maker addr_size in
   let entry = addr elf.e_entry in
-  let arch = match elf.e_machine with
-    | EM_386 -> Ok Arch.X86_32
-    | EM_X86_64 -> Ok Arch.X86_64
-    | EM_ARM -> Ok Arch.ARM
+  let arch = match elf.e_machine, endian with
+    | EM_386, _ -> Ok `x86
+    | EM_X86_64, _ -> Ok `x86_64
+    | EM_ARM, LittleEndian -> Ok `armv7
+    | EM_ARM, BigEndian -> Ok `armeb
+    | EM_AARCH64, LittleEndian -> Ok `aarch64
+    | EM_AARCH64, BigEndian -> Ok `aarch64_be
+    | EM_SPARC,_ -> Ok `sparc
+    | EM_SPARCV9,_ -> Ok `sparcv9
+    | EM_PPC,_ -> Ok `ppc
+    | EM_PPC64, BigEndian -> Ok `ppc64
+    | EM_PPC64, LittleEndian -> Ok `ppc64le
+    | EM_S390,_ -> Ok `systemz
+    | EM_MIPS, BigEndian -> Ok `mips
+    | EM_MIPS, LittleEndian -> Ok `mipsel
+    | EM_MIPS_X, BigEndian -> Ok `mips64
+    | EM_MIPS_X, LittleEndian -> Ok `mips64el
     | _ -> errorf "can't load file, unsupported platform" in
   let sections,errors =
     Seq.filter_mapi elf.e_segments (create_section addr) |>
@@ -143,7 +156,7 @@ let of_data_err (data : bigstring) : Img.t Or_error.t =
   Elf.Parse.from_bigstring data >>= img_of_elf data
 
 let of_data (data : Bigstring.t) : Img.t option =
-  match of_data_err data  with
+  match of_data_err data with
   | Ok img -> Some img
   | Error err ->
     eprintf "Elf_backend: failed with exn: %s" @@

@@ -1,6 +1,6 @@
 (** Basic disassembler.
 
-    This is a target agnostic basic disassembler. It
+    This is a target agnostic basic disassembler.
 *)
 
 open Core_kernel.Std
@@ -12,7 +12,7 @@ type kind = Bap_insn_kind.t with compare, sexp
 
 (** predicate to drive the disassembler *)
 type pred = [
-  | `valid  (** stop on first valid insn  *)
+  | `Valid  (** stop on first valid insn  *)
   |  kind   (** stop on first insn of the specified kind *)
 ] with sexp
 
@@ -22,8 +22,11 @@ type imm  with bin_io, compare, sexp
 type fmm  with bin_io, compare, sexp
 type (+'a,+'k) insn
 type (+'a,+'k) insns = (mem * ('a,'k) insn option) list
+type empty     (** set when information is not stored                *)
+type asm       (** set when assembler information is stored        *)
+type kinds     (** set when instruction kind information is stored *)
 
-
+type full_insn = (asm,kinds) insn with compare, sexp_of
 
 (** Disassembler.
 
@@ -43,13 +46,10 @@ type (+'a,+'k) insns = (mem * ('a,'k) insn option) list
     store extra information about instruction kind.
 
     Note: at some points you can have an access to this information
-    even if you don't enable it explicitely.
+    even if you don't enable it explicitly.
 *)
 type ('a,'k) t
 
-type empty     (** set when information is not stored                *)
-type asm       (** set when assembler information is stored        *)
-type kinds     (** set when instruction kind information is stored *)
 
 
 (** Disassembler state.
@@ -91,7 +91,7 @@ val store_kinds : ('a,_) t -> ('a,kinds) t
     process of disassembly can be driven using [stop], [step], [back]
     and [jump] functions, described later.
 
-    @param [stop_on] defines a set of predicates that will be checked
+    @param stop_on defines a set of predicates that will be checked
     on each step to decide whether it should stop here and call a
     user-provided [hit] function, or it should continue. The descision
     is made acording to the rule: [if exists stop_on then stop], i.e.,
@@ -101,23 +101,22 @@ val store_kinds : ('a,_) t -> ('a,kinds) t
     can match predicates, and if the set is empty, then it always
     evaluates to false.
 
-    @param [init] initial value of user data, that can be passed
+    @param init initial value of user data, that can be passed
     through handlers (cf., [fold])
 
-    @param [return] a function that lifts user data type ['s] to type
+    @param return a function that lifts user data type ['s] to type
     ['r]. It is useful when you need to perform disassembly in some
     monad, like [Or_error], or [Lwt]. Otherwise, just use [ident]
     function and assume that ['s == 'r].
 
-    In a process of disassembly three user provided callbacks are
-    invoked by the engine. To each callback at least two parameters
-    are passed: [state] and [user_data]. [user_data] is arbitrary data
-    of type ['s] with which the folding over the memory is actually
+    In a process of disassembly user provided callbacks are invoked by
+    the engine. To each callback at least two parameters are passed:
+    [state] and [user_data]. [user_data] is arbitrary data of type ['s]
+    with which the folding over the memory is actually
     performed. [state] incapsulates the current state of the
     disassembler, and provides continuation functions, namely [stop],
-    [next] and [back], that drives the process of
-    disassembly. This functions are used to pass control back to the
-    disassembler.
+    [next] and [back], that drives the process of disassembly. This
+    functions are used to pass control back to the disassembler.
 
     [stopped state user_data] is called when there is no more data to
     disassemble. This handler is optional and defaults to [stop].

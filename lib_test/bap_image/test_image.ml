@@ -8,8 +8,8 @@ open Image_common
 open Image_backend
 
 let create_addr = function
-  | W32 -> Addr.of_int ~width:32
-  | W64 -> Addr.of_int ~width:64
+  | `r32 -> Addr.of_int ~width:32
+  | `r64 -> Addr.of_int ~width:64
 
 let create_section
     ?(name=".test")
@@ -53,10 +53,10 @@ let nonempty = function
   | [] -> invalid_arg "list should be non empty"
   | x :: xs -> x, xs
 
-let create ?(addr_size=W32) ?(endian=LittleEndian) ~syms ss name =
+let create ?(addr_size=`r32) ?(endian=LittleEndian) ~syms ss name =
   let sections = nonempty (ss addr_size name) in
   let symbols = syms in
-  let arch = Arch.ARM in
+  let arch = `arm in
   let entry = create_addr addr_size 0 in
   let load _ =
     Some (Img.Fields.create ~arch ~addr_size ~endian ~entry ~sections ~symbols) in
@@ -66,10 +66,10 @@ let backends =
   let le = LittleEndian and be = BigEndian in
   List.fold ~init:[]
     ~f:(fun acc (n,syms,secs) ->
-        (n^"_32LE", create ~addr_size:W32 ~endian:le ~syms secs) ::
-        (n^"_32BE", create ~addr_size:W32 ~endian:be ~syms secs) ::
-        (n^"_64LE", create ~addr_size:W64 ~endian:le ~syms secs) ::
-        (n^"_64BE", create ~addr_size:W64 ~endian:be ~syms secs) ::
+        (n^"_32LE", create ~addr_size:`r32 ~endian:le ~syms secs) ::
+        (n^"_32BE", create ~addr_size:`r32 ~endian:be ~syms secs) ::
+        (n^"_64LE", create ~addr_size:`r64 ~endian:le ~syms secs) ::
+        (n^"_64BE", create ~addr_size:`r64 ~endian:be ~syms secs) ::
         acc) [
     "0-15",  [], data seq [0, 15];
     "16x4",  [], data seq [0, 15; 16,31; 32,47; 48,63];
@@ -129,7 +129,7 @@ let assert_cont ~word_size img =
         Addr.(a1 = a2) ==> Addr.(a1 = base)
       end;
       let s1 = Addr.of_int ~width:32 step in
-      let () = match Addr.Int.(!$a2 - !$a1 - !$s1) with
+      let () = match Addr.Int_err.(!$a2 - !$a1 - !$s1) with
         | Error err -> assert_string @@ Error.to_string_hum err
         | Ok diff ->
           assert_bool "a1 <> a2 -> a2 - a1 = (word_size)"

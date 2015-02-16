@@ -1,6 +1,6 @@
 OASISFormat: 0.4
 Name:        bap
-Version:     0.9
+Version:     0.9.3
 Synopsis:    BAP Core Library
 Authors:     BAP Team
 Maintainers: Ivan Gotovchits <ivg@ieee.org>
@@ -16,11 +16,9 @@ BuildDepends:
               comparelib.syntax,
               core_kernel,
               enumerate.syntax,
+              faillib.syntax,
               fieldslib.syntax,
               herelib.syntax,
-              herelib.syntax,
-              pa_bench.syntax,
-              pa_ounit.syntax,
               pa_ounit.syntax,
               sexplib.syntax,
               variantslib.syntax
@@ -35,10 +33,17 @@ Document bap
   Type: ocamlbuild (0.4)
   BuildTools: ocamlbuild, ocamldoc
   Title:      API documentation for bap
-  XOCamlbuildPath: lib/bap/
+  XOCamlbuildPath: .
   XOCamlbuildExtraArgs:
     "-docflags '-colorize-code -short-functors -charset utf-8'"
-  XOCamlbuildLibraries: bap
+  XOCamlbuildLibraries: bap,
+                        bap.types,
+                        bap.image,
+                        bap.disasm,
+                        bap.dwarf,
+                        bap.elf,
+                        bap.llvm
+
 
 Flag serialization
   Description: Build serialization library
@@ -53,11 +58,23 @@ Flag benchmarks
   Default: false
 
 Flag disassemblers
-  Description: Builds C++ interface to dissassemblers backend
+  Description: Build C++ interface to dissassemblers backend
   Default: true
+
+Flag server
+  Description: Build BAP server
+  Default: true
+
+Flag zmq
+  Description: Build ZMQ transports for BAP server
+  Default: false
 
 Flag llvm
  Description: Build with llvm backend
+ Default: true
+
+Flag server
+ Description: Build BAP server
  Default: true
 
 Library bap
@@ -101,6 +118,7 @@ Library types
                    Bap_bitvector,
                    Bap_common,
                    Bap_exp,
+                   Bap_helpers,
                    Bap_int_conversions,
                    Bap_integer,
                    Bap_integer_intf,
@@ -109,7 +127,8 @@ Library types
                    Bap_size,
                    Bap_stmt,
                    Bap_type,
-                   Bap_var
+                   Bap_var,
+                   Bap_visitor
 
 Library conceval
   Path: lib/bap_types
@@ -129,7 +148,7 @@ Library serialization
   BuildTools: ocamlbuild, piqi
   DataFiles:    *.piqi
   CompiledObject: best
-  BuildDepends: piqirun.pb, piqirun.ext, bap.types
+  BuildDepends: piqirun, bap.types
   Modules:   Bil_piqi,
              Stmt_piqi,
              Stmt_piqi_ext
@@ -141,7 +160,8 @@ Library bap_image
   BuildDepends:  bap.elf,
                  bap.dwarf,
                  bap.types
-  Modules:       Bap_image,
+  Modules:       Bap_fileutils,
+                 Bap_image,
                  Bap_memory,
                  Bap_table,
                  Image_backend,
@@ -202,7 +222,11 @@ Library disasm
                  Bap_disasm_arm_types,
                  Bap_disasm_arm_utils,
                  Bap_disasm_basic,
+                 Bap_disasm_block,
+                 Bap_disasm_insn,
                  Bap_disasm_prim,
+                 Bap_disasm_rec,
+                 Bap_disasm_types,
                  Bap_insn_kind
 
   CCOpt:         $cc_optimization
@@ -250,6 +274,7 @@ Library benchmarks
   Install:        false
   Modules:        Bench_image
 
+
 Library dwarf_test
   Path:           lib_test/bap_dwarf
   Build$:         flag(tests)
@@ -266,12 +291,41 @@ Library disasm_test
   Install:        false
   Modules:        Test_disasm
 
-Executable readbin
+Library core_lwt
+  Path:           lwt
+  Build$:         flag(server)
+  CompiledObject: best
+  BuildDepends:   lwt, lwt.unix, lwt.log
+  Modules:        Core_lwt,
+                  Core_lwt_basic,
+                  Core_lwt_container,
+                  Core_lwt_container_intf,
+                  Core_lwt_extra,
+                  Core_lwt_or_error,
+                  Core_lwt_pool,
+                  Core_lwt_stream
+
+Library zmq
+  Path:           src/server
+  Build$:         flag(server) && flag(zmq)
+  CompiledObject: best
+  Install:        true
+  Modules:        Zmq_client, Zmq_server
+
+Executable "bap-server"
+  Path:           src/server
+  Build$:         flag(server)
+  CompiledObject: best
+  BuildDepends:   bap, ezjsonm, uri, cohttp.lwt, core_lwt
+  Install:        true
+  MainIs:         start_server.ml
+
+Executable "bap-objdump"
   Path:           src/readbin
   MainIs:         readbin.ml
   Install:        true
   CompiledObject: best
-  BuildDepends:   bap, bap.disasm
+  BuildDepends:   bap, bap.disasm, ocamlgraph, ezjsonm, cmdliner
 
 Executable "bap-mc"
   Path:           src/bap_mc
@@ -283,11 +337,11 @@ Executable "bap-mc"
 Executable byteweight
   Path:           src/byteweight
   MainIs:         byteweight.ml
-  Install:        true
+  Install:        false
   CompiledObject: best
   BuildDepends:   bap
 
-Executable train
+Executable "bap-bw-train"
   Path:           src/byteweight
   MainIs:         train.ml
   Install:        true
@@ -297,7 +351,7 @@ Executable train
 Executable fbi
   Path:           src/fbi
   MainIs:         fbi.ml
-  Install:        true
+  Install:        false
   CompiledObject: best
   BuildDepends:   bap
 

@@ -13,8 +13,9 @@ type kinds
 type mem = Mem.t with sexp_of
 type kind = Kind.t with compare, sexp
 
+
 type pred = [
-  | `valid
+  | `Valid
   |  kind
 ] with sexp,compare
 
@@ -30,7 +31,7 @@ type reg_info = {
   reg_name : string Lazy.t;
 } with bin_io, sexp
 
-let compare_reg_info {reg_code=x} {reg_code=y} = compare x y
+let compare_reg_info {reg_code=x} {reg_code=y} = Int.compare x y
 
 type imm_info = {
   imm_small : int;
@@ -88,7 +89,7 @@ module Reg = struct
     let data =
       let reg_code = C.insn_op_reg_code dis.id ~insn ~oper in
       let reg_name =
-        if reg_code = 0 then lazy "nil"
+        if reg_code = 0 then lazy "Nil"
         else
           let off = C.insn_op_reg_name dis.id ~insn ~oper in
           lazy (Table.lookup dis.reg_table off) in
@@ -136,7 +137,7 @@ module Imm = struct
 
   let to_word t ~width =
     let n = to_int64 t in
-    match Word.bitsub ~hi:(width-1) (Word.of_int64 n) with
+    match Word.extract ~hi:(width-1) (Word.of_int64 n) with
     | Ok word -> Some word
     | Error _ -> None
 
@@ -215,17 +216,17 @@ with bin_io, compare, sexp
 
 
 let cpred_of_pred : pred -> C.pred = function
-  | `valid -> C.Is_true
-  | `conditional_branch -> C.Is_conditional_branch
-  | `unconditional_branch -> C.Is_unconditional_branch
-  | `indirect_branch -> C.Is_indirect_branch
-  | `return -> C.Is_return
-  | `call -> C.Is_call
-  | `barrier -> C.Is_barrier
-  | `terminator -> C.Is_terminator
-  | `may_affect_control_flow -> C.May_affect_control_flow
-  | `may_store  -> C.May_store
-  | `may_load -> C.May_load
+  | `Valid -> C.Is_true
+  | `Conditional_branch -> C.Is_conditional_branch
+  | `Unconditional_branch -> C.Is_unconditional_branch
+  | `Indirect_branch -> C.Is_indirect_branch
+  | `Return -> C.Is_return
+  | `Call -> C.Is_call
+  | `Barrier -> C.Is_barrier
+  | `Terminator -> C.Is_terminator
+  | `May_affect_control_flow -> C.May_affect_control_flow
+  | `May_store  -> C.May_store
+  | `May_load -> C.May_load
 
 module Insn = struct
   type ins_info = {
@@ -243,7 +244,7 @@ module Insn = struct
     Sexp.List (Sexp.Atom name :: List.map ops ~f:(fun op ->
         Sexp.Atom (Op.to_string op)))
 
-  let compare {code=x} {code=y} = compare x y
+  let compare {code=x} {code=y} = Int.compare x y
 
   let name {name = lazy x} = x
   let code op = op.code
@@ -290,6 +291,18 @@ type ('a,'k) insn = ('a,'k) Insn.t
 let compare_insn (i1 : ('a,'b) insn) (i2 : ('a,'b) insn) =
   Insn.compare i1 i2
 let sexp_of_insn : ('a,'b) insn -> Sexp.t = Insn.sexp_of_t
+
+
+type full_insn = (asm,kinds) insn
+
+let sexp_of_full_insn = sexp_of_insn
+let compare_full_insn i1 i2 =
+  let open Insn in
+  let r1 = Int.compare i1.code i2.code in
+  if r1 <> 0 then String.compare i1.asm i2.asm
+  else r1
+
+
 
 type (+'a,+'k) insns = (mem * ('a,'k) insn option) list
 
@@ -473,7 +486,7 @@ let insn_of_mem dis mem =
     if Mem.(max_addr mem' = max_addr mem) then Ok `finished
     else Mem.view mem ~from:Addr.(Mem.max_addr mem' ++ 1)
       >>| fun r -> `left r in
-  run ~stop_on:[`valid] dis mem ~return ~init
+  run ~stop_on:[`Valid] dis mem ~return ~init
     ~hit:(fun s mem' insn _ ->
         split mem' >>= fun r -> stop s (mem',Some insn,r))
     ~invalid:(fun s mem' _ ->

@@ -22,5 +22,8 @@ for i in "$@"; do
 done
 
 [ -f setup.ml -a setup.ml -nt _oasis ] || oasis -quiet setup
+
+
 ocaml preconfig.ml
+
 ocaml setup.ml -configure "$@"
