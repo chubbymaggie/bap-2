@@ -1,11 +1,15 @@
 open Core_kernel.Std
 open Bap_common
 open Format
+open Bap_bil
 
 let rec pp fmt s =
-  let open Bap_bil.Stmt in match s with
-  | Move (var, exp) -> fprintf fmt "@[<v2>%a := %a@]" Bap_var.pp var Bap_exp.pp exp
-  | Jmp exp -> fprintf fmt "jmp %a" Bap_exp.pp exp
+  let open Stmt in match s with
+  | Move (var, exp) ->
+    fprintf fmt "@[<v2>%a := %a@]" Bap_var.pp var Bap_exp.pp exp
+  | Jmp (Exp.Var _ | Exp.Int _ as exp) ->
+    fprintf fmt "jmp %a" Bap_exp.pp exp
+  | Jmp exp -> fprintf fmt "jmp (%a)" Bap_exp.pp exp
   | Special s -> fprintf fmt "special (%s)" s
   | While (cond, body) ->
     fprintf fmt "@[<v0>@[<v2>while (%a) {@;%a@]@;}@]"
@@ -46,6 +50,15 @@ end
 include Regular.Make(struct
     type t = Bap_bil.stmt with bin_io, compare, sexp
     let hash = Hashtbl.hash
-    let module_name = "Bap_stmt"
+    let module_name = Some "Bap.Std.Stmt"
     let pp = pp
   end)
+
+module Stmts_pp = struct
+  type t = stmt list
+  include Printable(struct
+      type nonrec t = t
+      let pp = pp_stmts
+      let module_name = Some "Bap.Std.Bil"
+    end)
+end

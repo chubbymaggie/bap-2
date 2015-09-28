@@ -17,7 +17,7 @@ module Id : Identifiable with type t := id
 module Target : sig
   type t = target
 
-  val arm :  Arm.Insn.t -> Arm.Op.t list -> t
+  val arm :  ARM.Insn.t -> ARM.Op.t list -> t
 
 end
 
@@ -57,9 +57,9 @@ module Response : sig
 
   val image : secs:res_ids -> Image.t resource -> msg
 
-  val section : syms:res_ids -> Section.t -> mem resource -> msg
+  val segment : syms:res_ids -> Image.Segment.t -> mem resource -> msg
 
-  val symbol : Symbol.t -> mem resource List1.t -> msg
+  val symbol : Image.Symbol.t -> mem resource List1.t -> msg
 
   val memory : mem resource -> msg
 
@@ -69,7 +69,7 @@ module Response : sig
   val insns : insn list -> msg
 
   val images   : res_id list -> msg
-  val sections : res_id list -> msg
+  val segments : res_id list -> msg
   val symbols  : res_id list -> msg
   val chunks   : res_id list -> msg
   val added    : res_id -> msg

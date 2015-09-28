@@ -44,6 +44,14 @@ module Binop = struct
   let le = LE
   let slt = SLT
   let sle = SLE
+
+  let is_commutative = function
+    | PLUS | TIMES | AND | XOR | OR | EQ | NEQ -> true
+    | _ -> false
+
+  let is_associative = function
+    | PLUS | TIMES | AND | OR | XOR -> true
+    | _ -> false
 end
 
 module Unop = struct
@@ -145,6 +153,8 @@ module PP = struct
 
   let rec pp fmt exp =
     let open Bap_bil.Exp in
+    let open Bap_bil.Binop in
+    let open Bap_bil.Unop in
     let is_imm = function
       | Var _ | Int _ -> true
       | _ -> false in
@@ -152,19 +162,30 @@ module PP = struct
         (if is_imm e then "%a" else "(%a)") in
     let pr s = fprintf fmt s in
     match exp with
-    | Load (mem, idx, edn, s) ->
+    | Load (Var _ as mem, idx, edn, s) ->
       pr "%a[%a, %a]:%a" pp mem pp idx pp_edn edn Bap_size.pp s
+    | Load (mem, idx, edn, s) ->
+      pr "(%a)[%a, %a]:%a" pp mem pp idx pp_edn edn Bap_size.pp s
     | Store (mem, idx, exp, edn, s) ->
-      pr "@[<v2>%a with [%a, %a]:%a <- %a@]"
+      pr "@[<2>%a@;with [%a, %a]:%a <- %a@]"
         pp mem pp idx pp_edn edn Bap_size.pp s pp exp
     | Ite (ce, te, fe) ->
-      pr "@[<v2>if %a@;then %a@;else %a@]" pp ce pp te pp fe
+      pr "@[<2>if %a@;then %a@;else %a@]" pp ce pp te pp fe
     | Extract (hi, lo, exp) ->
       pr "extract: %d:%d[%a]" hi lo pp exp
     | Concat (le, re) ->
       pr (a le ^^ "." ^^ a re) pp le pp re
+    | BinOp (EQ,e, Int x) | BinOp (EQ,Int x, e)
+      when Bitvector.(x = b1) -> pr ("%a") pp e
+    | BinOp (EQ,e, Int x) | BinOp (EQ,Int x, e)
+      when Bitvector.(x = b0) ->
+      pr ("%a(%a)") pp_unop Unop.NOT pp e
     | BinOp (op, le, re) ->
       pr (a le ^^ " %a " ^^ a re) pp le pp_binop op pp re
+    | UnOp (NOT, BinOp(LE,le,re)) ->
+      pr (a le ^^ " > " ^^ a re) pp le pp re
+    | UnOp (NOT, BinOp(LT,le,re)) ->
+      pr (a le ^^ " >= " ^^ a re) pp le pp re
     | UnOp (op, exp) ->
       pr ("%a" ^^ a exp) pp_unop op pp exp
     | Var var -> Bap_var.pp fmt var
@@ -180,6 +201,6 @@ end
 include Regular.Make(struct
     type t = Bap_bil.exp with bin_io, compare, sexp
     let hash = Hashtbl.hash
-    let module_name = "Bap_exp"
+    let module_name = Some "Bap.Std.Exp"
     let pp = PP.pp
   end)

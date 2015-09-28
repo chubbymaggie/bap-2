@@ -12,14 +12,14 @@ open Bap_disasm_types
 open Image_internal_std
 
 
-(** value of type [disasm] is a results of the disassembling of a
+(** value of type [disasm] is a result of the disassembling of a
     memory region. To create values of this type use [disassemble]
     function *)
 type disasm
 
 (** values of type [insn] represents machine instructions decoded
     from the given piece of memory *)
-type insn = Bap_disasm_insn.t with bin_io, compare, sexp_of
+type insn = Bap_disasm_insn.t with bin_io, compare, sexp
 type op = Op.t with bin_io, compare, sexp_of
 
 (** [block] is a region of memory that is believed to be a basic block
@@ -93,7 +93,6 @@ module Disasm : sig
       starting address only.  *)
   val insn_at_addr : t -> addr -> (mem * insn) option
 
-
   (** returns a blocks of memory that was visited during the
       disassembly. The regions are merged with [Memory.merge] if
       possible. So it returns the least possible amount of contiguous
@@ -106,7 +105,14 @@ module Disasm : sig
     | `Failed_to_lift of mem * insn * Error.t
   ] with sexp_of
 
+  module Error : Printable with type t := error
+
   (** returns a list of all errors and warnings that occurred during
       the disassembling *)
   val errors : t -> (mem * error) seq
+
+  (** Tags  *)
+  val insn : insn tag
+  val block : addr tag
+  val insn_addr : addr tag
 end

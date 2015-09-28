@@ -36,7 +36,7 @@ type disasm = {
 }
 
 let insns_of_blocks bs =
-  Seq.(Table.elements bs >>| Block.insns |> join)
+  Seq.(Table.elements bs >>| Block.insns >>| of_list |> join)
 
 let insns_table blocks =
   insns_of_blocks blocks |> Seq.fold ~init:Table.empty
@@ -96,10 +96,11 @@ let of_rec r =
     Table.foldi (Rec.blocks r) ~init:Table.empty
       ~f:(fun mem blk map ->
           List.fold (Rec.Block.insns blk) ~init:map
-            ~f:(fun map (mem,_,_ as insn) ->
-                match Insn.of_decoded insn with
-                | None -> add_rec_error map (`Failed_to_disasm mem)
-                | Some insn -> add_decoded map mem insn)) in
+            ~f:(fun map dec -> match dec with
+                | mem, (None,_) ->
+                  add_rec_error map (`Failed_to_disasm mem)
+                | mem, (Some insn, bil) ->
+                  add_decoded map mem (Insn.of_basic ?bil insn))) in
   let memmap =
     List.fold (Rec.errors r) ~init:memmap ~f:add_rec_error in
   let blocks = Rec.blocks r |> Table.map ~f:Block.of_rec_block in
@@ -107,7 +108,9 @@ let of_rec r =
   {blocks; memmap; insns; mems_of_insn}
 
 let lifter_of_arch = function
-  | #Arch.arm -> Some Bap_disasm_arm_lifter.insn
+  | #Arch.arm -> Some Bap_disasm_arm_lifter.lift
+  | `x86    -> Some (Bap_disasm_x86_lifter.IA32.lift)
+  | `x86_64 -> Some (Bap_disasm_x86_lifter.AMD64.lift)
   | _ -> None
 
 let linear_sweep arch mem : (mem * insn option) list Or_error.t =
@@ -125,9 +128,7 @@ let linear_sweep arch mem : (mem * insn option) list Or_error.t =
           | Ok bil -> mem, Some (Insn.of_basic ~bil insn)
           | _ -> mem, Some (Insn.of_basic insn))
 
-
 let linear_sweep_exn arch mem = ok_exn (linear_sweep arch mem)
-
 
 
 let disassemble ?roots arch mem =
@@ -136,9 +137,9 @@ let disassemble ?roots arch mem =
   | Error err -> fail (`Failed err) mem
   | Ok r -> of_rec r
 
-(* merges the results of disassembling of different sections,
+(* merges the results of disassembling of different segments,
    table entries mustn't overlap. *)
-let merge_different_sections d1 d2 =
+let merge_different_segments d1 d2 =
   let add mem x tab = Table.add tab mem x |> ok_exn in
   let merge t1 t2 = Table.foldi t1 ~init:t2 ~f:add in
   let memmap = merge d1.memmap d2.memmap in
@@ -152,9 +153,9 @@ let disassemble_image ?roots image =
     | Some roots -> roots
     | None -> Image.symbols image |> Table.regions |>
               Seq.map ~f:Memory.min_addr |> Seq.to_list in
-  Table.foldi ~init:empty (Image.sections image) ~f:(fun mem sec dis ->
-      if Image.Sec.is_executable sec then
-        merge_different_sections dis (disassemble ~roots arch mem)
+  Table.foldi ~init:empty (Image.segments image) ~f:(fun mem sec dis ->
+      if Image.Segment.is_executable sec then
+        merge_different_segments dis (disassemble ~roots arch mem)
       else dis)
 
 let disassemble_file ?roots filename =
@@ -209,6 +210,35 @@ module Disasm = struct
     | `Failed_to_disasm of mem
     | `Failed_to_lift of mem * insn * Error.t
   ] with sexp_of
+
+  let insn  = Value.Tag.register (module Insn)
+      ~name:"insn"
+      ~uuid:"8e2a3998-bf07-4a52-a791-f74ea190630a"
+
+  let block = Value.Tag.register (module Addr)
+      ~name:"disasm_block"
+      ~uuid:"d261d12c-23b9-4bc0-9d0b-a6700bf59377"
+
+  let insn_addr = Value.Tag.register (module Addr)
+      ~name:"insn_addr"
+      ~uuid:"38713d83-8a16-49f8-a753-40fcf91fe264"
+
+  module Error = Printable(struct
+      open Format
+      type t = error
+
+      let module_name = Some "Bap.Std.Disasm.Error"
+
+      let pp fmt t : unit =
+        match t with
+        | `Failed e ->
+          fprintf fmt "Failed: %a@\n" Error.pp e
+        | `Failed_to_disasm m ->
+          fprintf fmt "Failed to disassemble: %a@\n" Memory.pp m
+        | `Failed_to_lift (m, i, e) ->
+          fprintf fmt "Failed to lift: %a%a%a@\n"
+            Memory.pp m Insn.pp i Error.pp e
+    end)
 
   let errors d : (mem * error) seq =
     let open Seq.Generator in

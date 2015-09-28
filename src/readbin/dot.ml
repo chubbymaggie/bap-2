@@ -2,16 +2,23 @@ open Core_kernel.Std
 open Bap.Std
 open Options
 
-module Make(Env : Printing.Env) = struct
+module Make(Env : sig
+    val project : project
+    val options : Options.t
+    module Target : Target
+  end) = struct
   module Printing = Printing.Make(Env)
   module Helpers = Helpers.Make(Env)
   open Printing
   open Helpers
   open Env
 
+  let symbols = Project.symbols project
+  let cfg = Project.disasm project |> Disasm.blocks
+
   (** Creates a graph bounded by a memory region *)
   module Dottable = struct
-    type t = mem
+    type t = Symtab.fn
 
     type arity = [`Mono | `Many]
     type dest_kind = [`Jump | `Cond | `Fall]
@@ -31,9 +38,11 @@ module Make(Env : Printing.Env) = struct
 
     let vertex t blk = blk, block_name blk
 
-    let iter_vertex f mem =
-      Table.intersections Env.cfg mem |>
-      Seq.iter ~f:(fun (_,blk) -> f (vertex mem blk))
+    let iter_vertex f fn =
+      let bounded = unstage (Symtab.create_bound symbols fn) in
+      let bounded blk = bounded (Block.addr blk) in
+      Table.elements cfg |> Seq.filter ~f:bounded |>
+      Seq.iter ~f:(fun blk -> f (vertex fn blk))
 
     let iter_edges_e f mem =
       iter_vertex (fun (src,_) ->
@@ -56,7 +65,7 @@ module Make(Env : Printing.Env) = struct
       `Fontname "Monospace";
       `Width 1.0
     ]
-    let vertex_name = snd
+    let vertex_name (_,name) = sprintf "%S" name
 
     let id_only_vertex (blk,name) = [`Label name]
 
@@ -84,7 +93,7 @@ module Make(Env : Printing.Env) = struct
       let pr = asprintf in
       List.sort ~cmp:label_order options.cfg_format |>
       List.map ~f:(function
-          | `with_name -> pr "%s@." name
+          | `with_name -> pr "«%s»\\n" name
           | `with_asm  -> pr "@[<v>%a@]@?" pp_blk_asm blk |> escape_label
           | `with_bil  -> pr "@[<v>%a@]@?" pp_blk_bil blk |> escape_label) |>
       String.concat

@@ -2,10 +2,11 @@ open Core_kernel.Std
 
 module type Printable = sig
   type t
-  val to_string: t -> string
+  val to_string : t -> string
   val str : unit -> t -> string
   val pps : unit -> t -> string
   val ppo : out_channel -> t -> unit
+  val pp_seq : Format.formatter -> t Sequence.t -> unit
   include Pretty_printer.S     with type t := t
 end
 
@@ -17,15 +18,13 @@ module type S = sig
 end
 
 module Printable(M : sig
-                   include Pretty_printer.S
-                   val module_name : string
-                 end) = struct
+    include Pretty_printer.S
+    val module_name : string option
+  end) = struct
   include M
 
   let to_string t =
-    let open Format in
-    pp str_formatter t;
-    flush_str_formatter ()
+    Format.asprintf "%a" pp t
 
   let pps () t =
     to_string t
@@ -37,16 +36,22 @@ module Printable(M : sig
     pp f x;
     Format.pp_print_flush f ()
 
+  let pp_seq ppf xs : unit =
+    Bap_seq.pp pp ppf xs
 
-  let () = Pretty_printer.register (M.module_name ^ ".pp")
+
+  let () = Option.iter M.module_name
+      ~f:(fun name ->
+          Pretty_printer.register (name ^ ".pp");
+          Pretty_printer.register (name ^ ".pp_seq"))
 end
 
 module Make(M : sig
-              type t with bin_io, compare, sexp
-              include Pretty_printer.S with type t := t
-              val hash: t -> int
-              val module_name : string
-            end) = struct
+    type t with bin_io, compare, sexp
+    include Pretty_printer.S with type t := t
+    val hash: t -> int
+    val module_name : string option
+  end) = struct
   include M
   include (Printable(M) : Printable with type t := t)
   include Comparable.Make_binable(M)

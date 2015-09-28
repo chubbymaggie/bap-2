@@ -43,9 +43,9 @@ end)#run bil []
 
 let lookup_side_effects bil = (object
   inherit [kind list] Bil.visitor
-  method! enter_store ~dst:_ ~addr:_ ~src:_ _ _ acc =
+  method! enter_store ~mem:_ ~addr:_ ~exp:_ _ _ acc =
     `May_store :: acc
-  method! enter_load ~src:_ ~addr:_ _ _ acc =
+  method! enter_load ~mem:_ ~addr:_ _ _ acc =
     `May_load :: acc
 end)#run bil []
 
@@ -68,7 +68,7 @@ let of_basic ?bil insn =
     code = Insn.code insn;
     name = Insn.name insn;
     asm  = normalize_asm (Insn.asm insn);
-    bil  = Option.value bil ~default:[];
+    bil  = Option.value bil ~default:[Bil.special "Unknown Semantics"];
     ops  = Insn.ops insn;
     is_jump;
     is_conditional_jump;
@@ -84,14 +84,52 @@ let has_side_effect insn = may_store insn || may_load insn
 let is_unconditional_jump insn =
   is_jump insn || not (is_conditional_jump insn)
 
-let of_decoded = function
-  | _, Some insn, bil -> Some (of_basic ?bil insn)
-  | _, None,_ -> None
+module Adt = struct
+  let pr fmt = Format.fprintf fmt
+
+  let rec pp_ops ch = function
+    | [] -> ()
+    | [x] -> pr ch "%a" Op.pp_adt x
+    | x :: xs -> pr ch "%a, %a" Op.pp_adt x pp_ops xs
+
+  let pp ch insn = pr ch "%s(%a)"
+      (String.capitalize insn.name)
+      pp_ops (Array.to_list insn.ops)
+end
+
+let pp_adt = Adt.pp
+
+module Trie = struct
+  module Key = struct
+    type token = int * Op.t array with bin_io, compare, sexp
+    type t = token array
+
+    let length = Array.length
+    let nth_token = Array.get
+    let token_hash = Hashtbl.hash
+  end
+
+  module Normalized = Trie.Make(struct
+      include Key
+      let compare_token (x,xs) (y,ys) =
+        let r = compare_int x y in
+        if r = 0 then Op.Normalized.compare_ops xs ys else r
+      let hash_ops = Array.fold ~init:0
+          ~f:(fun h x -> h lxor Op.Normalized.hash x)
+      let hash (x,xs) =
+        x lxor hash_ops xs
+    end)
+
+  let token_of_insn insn = insn.code, insn.ops
+  let key_of_insns = Array.of_list_map ~f:token_of_insn
+
+  include Trie.Make(Key)
+end
 
 include Regular.Make(struct
     type nonrec t = t with sexp, bin_io, compare
     let hash = code
-    let module_name = "Bap_disasm_insn"
+    let module_name = Some "Bap.Std.Insn"
 
     let string_of_ops ops =
       Array.map ops ~f:Op.to_string |> Array.to_list |>

@@ -1,5 +1,6 @@
 open Core_kernel.Std
 open Bap_types.Std
+open Bil.Types
 open Or_error
 open Image_internal_std
 module Dis = Bap_disasm_basic
@@ -20,6 +21,7 @@ module type Span = sig
   val upper_bound : t -> addr -> addr option
   val min : t -> addr option
   val max : t -> addr option
+  val pp : Format.formatter -> t -> unit
 end
 
 module Span : Span = struct
@@ -44,6 +46,12 @@ module Span : Span = struct
     | Empty
     | Node of t * range * addr * t
   with sexp_of
+
+  let rec pp fmt = function
+    | Empty -> ()
+    | Node (lhs,(x,y),_,rhs) ->
+      Format.fprintf fmt "@[%a(%a,%a)@,%a@]"
+        pp lhs Addr.pp x Addr.pp y pp rhs
 
   let empty = Empty
 
@@ -120,8 +128,15 @@ type error = [
   | `Failed_to_lift of mem * insn * Error.t
 ] with sexp_of
 
-type decoded =  mem * insn option * stmt list option
-with sexp_of
+type maybe_insn = insn option * bil option with sexp_of
+type decoded = mem * maybe_insn with sexp_of
+
+type jump = [
+  | `Jump     (** unconditional jump                  *)
+  | `Cond     (** conditional jump                    *)
+] with compare, sexp
+
+type edge = [jump | `Fall] with compare,sexp
 
 type block = {
   addr : addr;
@@ -135,8 +150,8 @@ type block = {
 }
 
 and blk_dest = [
-  | `Block of block * [`Jump | `Cond | `Fall]
-  | `Unresolved of [`Jump | `Cond ]
+  | `Block of block * edge
+  | `Unresolved of jump
 ]
 
 
@@ -145,7 +160,8 @@ type stage1 = {
   addr : addr;
   visited : Span.t;
   roots : addr list;
-  dests : dests Table.t;
+  inits : addr list;
+  dests : dests Addr.Table.t;
   errors : (addr * error) list;
   lifter : lifter option;
 }
@@ -168,8 +184,8 @@ let sexp_of_block (blk : block) =
   Sexp.Atom (Addr.string_of_value blk.addr)
 
 let kind_of_dests = function
-  | [] -> `Fall
-  | xs -> if List.exists xs ~f:(fun (_,x) -> x = `Jump)
+  | xs when List.for_all xs ~f:(fun (_,x) -> x = `Fall) -> `Fall
+  | xs -> if List.exists  xs ~f:(fun (_,x) -> x = `Jump)
     then `Jump
     else `Cond
 
@@ -179,18 +195,22 @@ let kind_of_branches t f =
   | `Fall,`Fall -> `Fall
   | _         -> `Cond
 
-let rec dests_of_bil bil = List.concat_map bil ~f:dests_of_stmt
+let fold_consts = Bil.(fixpoint fold_consts)
+
+(* [dests_of_*] return a list of jumps, without concerning about
+   fallthroughs. They're added later in [update_dests] *)
+let rec dests_of_bil bil =
+  fold_consts bil |> List.concat_map ~f:dests_of_stmt
 and dests_of_stmt = function
-  | Stmt.Jmp (Exp.Int addr) -> [Some addr,`Jump]
-  | Stmt.Jmp (_) -> [None, `Jump]
-  | Stmt.If (_,yes,no) -> merge_branches yes no
-  | Stmt.While (_,ss) -> dests_of_bil ss
+  | Jmp (Int addr) -> [Some addr,`Jump]
+  | Jmp (_) -> [None, `Jump]
+  | If (_,yes,no) -> merge_branches yes no
+  | While (_,ss) -> dests_of_bil ss
   | _ -> []
 and merge_branches yes no =
   let x = dests_of_bil yes and y = dests_of_bil no in
   let kind = kind_of_branches x y in
   List.(rev_append x y >>| fun (a,_) -> a,kind)
-
 
 (* the following is a speculation...  *)
 let dests_of_basic s insn =
@@ -203,30 +223,37 @@ let dests_of_basic s insn =
   else
     let ops = Dis.Insn.ops insn in
     if Array.is_empty ops then [] else match ops.(0) with
-      | Dis.Op.Imm off -> (* in ARM offset is shifted by 8 bytes *)
+      | Dis.Op.Imm off ->
+        (* in ARM offset is shifted by 8 bytes, in x86 jump target can
+           be relative or absolute, this all shouldn't work at all. *)
         let width = Addr.bitwidth s.addr in
         Option.value_map (Dis.Imm.to_word ~width off)
           ~default:[] ~f:(fun off ->
               [Some Addr.Int_exn.(s.addr + off), kind])
       | _ -> []
 
-
 let errored s ty = {s with errors = (s.addr,ty) :: s.errors}
 
 let update_dests next s mem insn dests =
   let is = Dis.Insn.is insn in
+  let fall = Some next, `Fall in
   let dests = match kind_of_dests dests with
-    | `Jump when not (is `Call) -> dests
-    | _ -> (Some next, `Fall) :: dests in
+    | `Fall when is `Return -> [] (* if BIL doesn't get this *)
+    | `Jump when is `Call -> fall :: dests
+    | `Cond | `Fall -> fall :: dests
+    | _ -> dests in
+  (* prune dests that points to unrecognized or unmapped memory *)
   let dests = List.map dests ~f:(fun d -> match d with
       | Some addr,kind when Memory.contains s.base addr -> d
       | _,kind -> None, kind) in
+  let key = Memory.max_addr mem in
+  begin match dests with
+    | [] -> Addr.Table.add_exn s.dests ~key ~data:[]
+    | dests -> List.iter dests ~f:(fun data ->
+        Addr.Table.add_multi s.dests ~key ~data)
+  end;
   { s with
     roots = List.filter_map ~f:fst dests |> List.rev_append s.roots;
-    dests = Table.change s.dests mem (fun ms -> match Seq.to_list_rev ms with
-        | [] -> `rebind (mem,dests)
-        | [_,prev] -> `rebind (mem, List.rev_append prev dests)
-        | _ -> failwith "overlapping instructions")
   }
 
 let update next s mem insn : stage1 =
@@ -240,11 +267,13 @@ let update next s mem insn : stage1 =
 let next dis s =
   let rec loop s = match s.roots with
     | [] -> Dis.stop dis s
-    | r :: roots when not(Memory.contains s.base r) -> loop {s with roots}
-    | r :: roots when Span.mem s.visited r -> loop {s with roots}
+    | r :: roots when not(Memory.contains s.base r) ->
+      loop {s with roots}
+    | r :: roots when Span.mem s.visited r ->
+      loop {s with roots}
     | addr :: roots ->
       let mem = match Span.upper_bound s.visited addr with
-        | None ->  Memory.view ~from:addr s.base
+        | None -> Memory.view ~from:addr s.base
         | Some r1 -> Memory.range s.base addr r1  in
       let mem =
         Result.map_error mem ~f:(fun err -> Error.tag err "next_root") in
@@ -256,8 +285,9 @@ let stage1 ?lifter ?(roots=[]) disasm base =
   let addr,roots = match roots with
     | r :: rs -> r,rs
     | [] -> Memory.min_addr base, [] in
-  let init = {base; addr; visited = Span.empty; roots;
-              dests = Table.empty; errors = []; lifter} in
+  let init = {base; addr; visited = Span.empty;
+              roots; inits = roots;
+              dests = Addr.Table.create (); errors = []; lifter} in
   Memory.view ~from:addr base >>= fun mem ->
   Dis.run disasm mem ~stop_on:[`May_affect_control_flow] ~return ~init
     ~hit:(fun d mem insn s -> next d (update (Dis.addr d) s mem insn))
@@ -272,19 +302,16 @@ let stage1 ?lifter ?(roots=[]) disasm base =
    terminator addresses, to all outputs with each output including the
    kind annotation, e.g, Cond, Jump, etc. This also includes
    unresolved outputs.
-
 *)
 
 let sexp_of_addr addr =
   Sexp.Atom (Addr.string_of_value addr)
 
-
-let create_indexes (dests : dests Table.t) =
+let create_indexes (dests : dests Addr.Table.t) =
   let leads = Addrs.create () in
   let terms = Addrs.create () in
   let succs = Addrs.create () in
-  Table.iteri dests ~f:(fun mem dests ->
-      let src = Memory.max_addr mem in
+  Addr.Table.iter dests ~f:(fun ~key:src ~data:dests ->
       List.iter dests ~f:(fun dest ->
           Addrs.add_multi succs ~key:src ~data:dest;
           match dest with
@@ -294,17 +321,21 @@ let create_indexes (dests : dests Table.t) =
             Addrs.add_multi terms ~key:src ~data:dst));
   leads, terms, succs
 
-
 let stage2 dis stage1 =
   let leads, terms, kinds = create_indexes stage1.dests in
   let addrs = Addrs.create () in
   let succs = Addrs.create () in
   let preds = Addrs.create () in
+  let inits =
+    List.fold ~init:Addr.Set.empty stage1.inits ~f:Set.add in
   let next = Addr.succ in
   let is_edge addr =
-    Addrs.mem leads (next addr) || Addrs.mem kinds addr in
+    Addrs.mem leads (next addr) ||
+    Addrs.mem kinds addr ||
+    Addrs.mem stage1.dests addr ||
+    Addr.Set.mem inits (next addr) in
   let is_visited = Span.mem stage1.visited in
-  let next_unvisited = Span.upper_bound stage1.visited in
+  let next_visited = Span.upper_bound stage1.visited in
   let create_block start finish =
     Memory.range stage1.base start finish >>= fun blk ->
     Addrs.add_exn addrs ~key:start ~data:blk;
@@ -314,22 +345,26 @@ let stage2 dis stage1 =
           Addrs.add_multi preds ~key:leader ~data:start) in
     let dests = match Addrs.find kinds finish with
       | Some dests -> dests
-      | None when Addrs.mem leads (next finish) ->
+      | None when Addrs.mem leads (next finish) &&
+                  not (Addrs.mem stage1.dests finish) ->
         Addrs.add_multi preds ~key:(next finish) ~data:start;
         [Some (next finish),`Fall]
       | None -> [] in
     Addrs.add_exn succs ~key:start ~data:dests;
     return () in
-  let rec loop start curr =
-    let curr = next curr in
+
+  let rec loop start curr' =
+    let curr = next curr' in
     if is_visited curr then
-      if is_edge curr
-      then create_block start curr >>= fun () ->
-        loop (next curr) (next curr)
+      if is_edge curr then
+        create_block start curr >>= fun () ->
+        loop (next curr) curr
       else loop start curr
-    else match next_unvisited curr with
-      | None -> return ()
-      | Some addr -> loop addr addr in
+    else match next_visited curr with
+      | Some addr -> loop addr addr
+      | None when is_visited start && is_visited curr' ->
+        create_block start curr'
+      | None -> return () in
   match Span.min stage1.visited with
   | None -> errorf "Provided memory doesn't contain recognizable code"
   | Some addr -> loop addr addr >>= fun () ->
@@ -340,12 +375,12 @@ let stage2 dis stage1 =
         ~init:[] ~return:ident ~stopped:(fun s _ ->
             Dis.stop s (Dis.insns s)) |>
       List.map ~f:(function
-          | mem, None -> mem,None,None
+          | mem, None -> mem,(None,None)
           | mem, (Some ins as insn) -> match stage1.lifter with
-            | None -> mem,insn,None
+            | None -> mem,(insn,None)
             | Some lift -> match lift mem ins with
-              | Ok bil -> mem,insn,Some bil
-              | _ -> mem, insn, None) in
+              | Ok bil -> mem,(insn,Some bil)
+              | _ -> mem, (insn, None)) in
     return {stage1; addrs; succs; preds; disasm}
 
 module Block = struct
@@ -357,10 +392,58 @@ module Block = struct
 
   open Seq.Step
 
+  exception Empty_block
+
+  (* for the ease of end-user we shouldn't expose totaly
+     broken blocks, that have zero valid instructions.
+
+     We can't guarantee that no such blocks exist on initial
+     stages of CFG reconstruction, since wrongly decoded jump
+     targets can even point us into the middle of instruction.
+
+     For example, we sweeped through a 7 bytes of memory, that was
+     perfectly decodable. But the first 3 bytes was, actually a call
+     to a function that never returns, so the left over is just a
+     junk, that happens to be a valid instructions. The last
+     instruction is happend to be a jump at offset -1. On a first
+     pass we do not follow the jump, since it is already inside the
+     memory region that was marked as visited and even decoded. As
+     a result, we create a BB that points to one byte of undecodable
+     trash.
+
+        +-----------------------+
+        |                       |
+        |      jump exit        |
+        |                       |
+        +-----------------------+
+        |    2 bytes of trash   |
+        |                       |<----+
+        +-----------------------+     |   points into the middle
+        |   2 bytes of trash    |     |   of trash, that is no
+        | decoded as (jump -1)  +-----+   longer decodable. BOOM
+        +-----------------------+
+
+     This all this said, we have to choices:
+     1. Do not preserve the invariant, that blocks contain at least
+        one decoded instruction, and as a result, make `leader` and
+        `terminator` functions to return an option.
+
+     2. Enforce the variant by filtering out empty blocks from the
+       CFG. This requires us to perform a yet another disassembly,
+       just to look inside the block and decide, whether it has any
+       instructions.
+  *)
+
+
+  let sort_dests =
+    List.sort ~cmp:(fun x y -> match x,y with
+        | (_,`Fall), _ -> 1
+        | _,_ -> 0)
+
   let rec create t addr =
     let nabes inj side =
       Seq.of_list (side addr) |> Seq.unfold_with ~init:()
-        ~f:(fun () nabe -> inj nabe) in
+        ~f:(fun () nabe -> try inj nabe with exn -> Skip ()) in
     let block_of_pred addr = Yield (create t addr, ()) in
     let block_of_succ = function
       | Some addr, _ -> block_of_pred addr
@@ -372,11 +455,13 @@ module Block = struct
       | None,`Jump -> Yield (`Unresolved `Jump, ())
       | None,`Cond -> Yield (`Unresolved `Cond, ()) in
     let with_nil f a = Option.value ~default:[] (f a) in
-    let succs a = with_nil (Addrs.find t.succs) a in
+    let succs a = sort_dests (with_nil (Addrs.find t.succs) a) in
     let preds a = with_nil (Addrs.find t.preds) a in
-    let mem = lazy (try Addrs.find_exn t.addrs addr with
-        | Not_found -> failwithf "failed to find block %s\n"
-                         (Addr.string_of_value addr) ()) in
+    let get_mem () = Addrs.find_exn t.addrs addr  in
+    let mem = Lazy.from_fun get_mem in
+    if List.for_all (t.disasm @@ get_mem ())
+        ~f:(fun (_,(insn,_)) -> insn = None)
+    then raise Empty_block;
     let insns = Lazy.(mem   >>| t.disasm) in
     let lead  = Lazy.(insns >>| List.hd_exn) in
     let term  = Lazy.(insns >>| List.last_exn) in
@@ -390,8 +475,8 @@ module Block = struct
   let addr (b : block) = b.addr
 
   let memory {mem = lazy x} = x
-  let leader {lead = lazy x} = x
-  let terminator {term = lazy x} = x
+  let leader {lead = lazy (_,x)} = x
+  let terminator {term = lazy (_,x)} = x
   let insns {insns = lazy x} = x
   let succs t = t.blk_succs
   let preds t = t.blk_preds
@@ -423,19 +508,30 @@ module Block = struct
 
   include Printable(struct
       type t = block
-      let module_name = "Bap_disasm_rec.Block"
+      let module_name = Some "Bap.Std.Disasm_expert.Recursive.Block"
       let pp fmt  ({addr; mem = lazy mem} : block) =
         Format.fprintf fmt "[%s, %s]"
           Addr.(string_of_value addr)
           Addr.(string_of_value (Memory.max_addr mem))
     end)
+
+  module T = struct
+    type t = block with sexp_of
+    let t_of_sexp _ = invalid_arg "table element is abstract"
+    let compare = compare
+    let hash b = Addr.hash (addr b)
+  end
+
+  include Hashable.Make(T)
+  include Comparable.Make(T)
 end
 
 let stage3 s2 =
-  let pred_is_found = Addrs.mem s2.addrs in
+  let is_found addr = Addrs.mem s2.addrs addr in
+  let pred_is_found = is_found in
   let succ_is_found = function
     | None,_ -> true
-    | Some addr,_ -> Addrs.mem s2.addrs addr in
+    | Some addr,_ -> is_found addr in
   let filter bs ~f = Addrs.filter_map bs ~f:(fun ps ->
       match List.filter ps ~f with
       | [] -> None
@@ -448,15 +544,15 @@ let stage3 s2 =
   Addrs.fold ~init:(return Table.empty)
     s2.addrs ~f:(fun ~key:addr ~data:mem tab ->
         tab >>= fun tab ->
-        let blk = Block.create s2 addr in
-        Table.add tab mem blk) >>= fun blocks ->
+        try
+          Table.add tab mem (Block.create s2 addr)
+        with exn -> return tab) >>= fun blocks ->
   return {blocks; failures = s2.stage1.errors}
 
 
 let run ?(backend="llvm") ?lifter ?roots arch mem =
   Dis.create ~backend (Arch.to_string arch) >>= fun dis ->
-  stage1 ?lifter ?roots dis mem >>=
-  stage2 dis >>= stage3
+  stage1 ?lifter ?roots dis mem >>= stage2 dis >>= stage3
 
 let blocks t = t.blocks
 let compare_block = Block.compare
