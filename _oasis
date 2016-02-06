@@ -5,11 +5,11 @@ Synopsis:    BAP Core Library
 Authors:     BAP Team
 Maintainers: Ivan Gotovchits <ivg@ieee.org>
 License:     MIT
-Copyrights:  (C) 2014 Carnegie Mellon University
+Copyrights:  (C) 2016 Carnegie Mellon University
 Plugins:     META (0.4)
 AlphaFeatures: ocamlbuild_more_args
 BuildTools: ocamlbuild, camlp4o
-XOCamlbuildExtraArgs: -j 1
+XOCamlbuildExtraArgs: -j 8
 BuildDepends:
               bin_prot.syntax,
               camlp4,
@@ -30,8 +30,8 @@ PostInstallCommand: ocaml postinstall.ml
 PostUninstallCommand: $rm $bindir/baptop
 PostDistcleanCommand: $rm  _tags myocamlbuild.ml setup.ml setup.data
 
-Flag serialization
-  Description: Build serialization library
+Flag piqi
+  Description: Build piqi serialization library
   Default: true
 
 Flag llvm_static
@@ -45,14 +45,6 @@ Flag benchmarks
 Flag disassemblers
   Description: Build C++ interface to dissassemblers backend
   Default: true
-
-Flag server
-  Description: Build BAP server
-  Default: true
-
-Flag zmq
-  Description: Build ZMQ transports for BAP server
-  Default: false
 
 Flag llvm
  Description: Build with llvm backend
@@ -86,7 +78,7 @@ Library plugins
 
 Library top
   XMETADescription:
-     Toplevel printers for bap-types and core-kernel
+     Toplevel printers for bap-types and core_kernel
   Path: lib/bap
   FindLibParent: bap
   FindLibName: top
@@ -114,6 +106,11 @@ Library types
                    Bap_common,
                    Bap_config,
                    Bap_context,
+                   Bap_data,
+                   Bap_data_intf,
+                   Bap_data_types,
+                   Bap_data_write,
+                   Bap_data_read,
                    Bap_exp,
                    Bap_expi,
                    Bap_graph,
@@ -148,20 +145,23 @@ Library types
                    Bap_uuid,
                    Graphlib
 
-Library serialization
-  XMETADescription: Provides serialization for main data types
-  Path:         lib/bap_types/
-  Build$: flag(serialization)
+Library piqi
+  XMETADescription: Provides piqi serialization for main data types (BIL, IR)
+  Path:         piqi
+  Build$: flag(piqi)
   FindLibParent: bap
-  FindLibName: serialization
+  FindLibName: piqi
   BuildTools: ocamlbuild, piqi
   DataFiles:    *.piqi
   CompiledObject: best
   BuildDepends: piqirun,piqirun.pb,piqirun.ext,bap
-  Modules:   Bil_piqi
+  Modules:   Bir_piqi, Bil_piqi
   InternalModules:
              Stmt_piqi,
-             Stmt_piqi_ext
+             Stmt_piqi_ext,
+             Ir_piqi,
+             Ir_piqi_ext
+
 
 Library bap_image
   Path:          lib/bap_image/
@@ -370,6 +370,7 @@ Library sema_test
   Install:        false
   Modules:        Test_ir
 
+
 Library benchmarks
   Path:           benchmarks
   Build$:         flag(tests) && flag(benchmarks)
@@ -378,27 +379,6 @@ Library benchmarks
   Install:        false
   Modules:        Bench_dom, Bench_image
 
-Library core_lwt
-  Path:           lwt
-  Build$:         flag(server)
-  CompiledObject: best
-  BuildDepends:   lwt, lwt.unix, lwt.log
-  Modules:        Core_lwt,
-                  Core_lwt_basic,
-                  Core_lwt_container,
-                  Core_lwt_container_intf,
-                  Core_lwt_extra,
-                  Core_lwt_or_error,
-                  Core_lwt_pool,
-                  Core_lwt_stream
-
-Library zmq
-  Path:           src/server
-  Build$:         flag(server) && flag(zmq)
-  CompiledObject: best
-  Install:        true
-  Modules:        Zmq_client, Zmq_server
-
 Library trace
   Path:            lib/bap_trace
   FindlibParent:   bap
@@ -406,8 +386,8 @@ Library trace
   CompiledObject:  best
   InternalModules: Bap_trace,
                    Bap_trace_binprot,
-                   Bap_trace_events,  
-                   Bap_trace_event_types, 
+                   Bap_trace_events,
+                   Bap_trace_event_types,
                    Bap_trace_meta,
                    Bap_trace_meta_types,
                    Bap_trace_std
@@ -421,16 +401,9 @@ Library trace_test
   Modules:         Test_trace
   BuildDepends:    bap, bap.trace, oUnit
 
-Executable "bap-server"
-  Path:           src/server
-  Build$:         flag(server)
-  CompiledObject: best
-  BuildDepends:   bap, bap.plugins, ezjsonm, uri, cohttp.lwt, core_lwt, re
-  Install:        true
-  MainIs:         start_server.ml
 
 Executable "bap"
-  Path:           src/readbin
+  Path:           src
   MainIs:         bap_main.ml
   Install:        true
   CompiledObject: best
@@ -440,30 +413,29 @@ Executable "bap"
                   cmdliner,
                   ezjsonm,
                   fileutils,
-                  ocamlgraph,
-                  re.posix
+                  re.posix,
+                  FrontC
 
 Executable "bap-byteweight"
-  Path:           src/readbin
+  Path:           src
   MainIs:         byteweight_main.ml
   Install:        true
   CompiledObject: best
   BuildDepends:   bap, bap.plugins, cmdliner, curl, fileutils, re.posix
 
 Executable "bap-fsi-benchmark"
-  Path:           src/readbin
+  Path:           src
   MainIs:         fsi_benchmark_main.ml
   Install:        true
   CompiledObject: best
   BuildDepends:   bap, bap.plugins, cmdliner, fileutils, re.posix
 
 Executable "bap-mc"
-  Path:           src/bap_mc
+  Path:           src
   MainIs:         bap_mc.ml
   Install:        true
   CompiledObject: best
-  BuildDepends:   bap, bap.plugins, cmdliner, bap.serialization
-
+  BuildDepends:   bap, bap.plugins, cmdliner, bap.piqi
 
 Executable "bapbuild"
   Path:           .
@@ -488,6 +460,14 @@ Executable run_tests
                 trace_test
   CompiledObject: best
 
+Executable run_piqi_tests
+  Path:		  piqi/test
+  Build$:	  flag(tests) && flag(piqi)
+  CompiledObject: best
+  BuildDepends:	  bap, oUnit, bap.piqi
+  Install:	  false
+  MainIs: run_piqi_tests.ml
+
 Executable run_benchmarks
   Path:         benchmarks
   MainIs:       run_benchmarks.ml
@@ -495,6 +475,10 @@ Executable run_benchmarks
   Build$:       flag(tests) && flag(benchmarks)
   BuildDepends: bap, benchmarks
   CompiledObject: native
+
+Test piqi_tests
+ TestTools: run_piqi_tests
+ Command: $run_piqi_tests -runner sequential
 
 Test unit_tests
   TestTools: run_tests

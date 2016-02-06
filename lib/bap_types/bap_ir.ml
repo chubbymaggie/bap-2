@@ -61,6 +61,8 @@ module Tid = struct
   include Regular.Make(struct
       type nonrec t = Int63.t with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Tid"
+      let version = "0.1"
+
       let hash = Int63.hash
 
       let pp ppf tid =
@@ -374,6 +376,7 @@ module Term = struct
   let prepend t ?before:id = insert t (`before id)
   let append t ?after:id p c = insert t (`after id) p c
   let set_attr t tag x = {t with dict = Dict.set t.dict tag x}
+  let attrs t = t.dict
   let get_attr t = Dict.find t.dict
   let del_attr t tag = {t with dict = Dict.remove t.dict tag}
   let has_attr t tag = get_attr t tag <> None
@@ -411,6 +414,8 @@ module Label = struct
   include Regular.Make(struct
       type t = label with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Label"
+      let version = "0.1"
+
       let hash = Hashtbl.hash
       let pp ppf = function
         | Indirect exp -> Bap_exp.pp ppf exp
@@ -430,6 +435,8 @@ module Call = struct
   include Regular.Make(struct
       type t = call with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Call"
+      let version = "0.1"
+
 
       let pp_return ppf lab = match lab with
         | Some label ->
@@ -463,6 +470,8 @@ module Ir_arg = struct
   include Regular.Make(struct
       type t = arg term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Arg"
+      let version = "0.1"
+
       let hash = hash_of_term
 
       let string_of_intent = function
@@ -498,6 +507,8 @@ module Ir_def = struct
   include Regular.Make(struct
       type t = def term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Def"
+      let version = "0.1"
+
       let hash = hash_of_term
 
       let pp_self ppf (lhs,rhs) =
@@ -546,6 +557,8 @@ module Ir_phi = struct
   include Regular.Make(struct
       type t = phi term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Phi"
+      let version = "0.1"
+
       let hash = hash_of_term
 
       let pp_self ppf (lhs,rhs) =
@@ -632,6 +645,8 @@ module Ir_jmp = struct
   include Regular.Make(struct
       type t = jmp term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Jmp"
+      let version = "0.1"
+
       let hash = hash_of_term
 
       let pp_dst ppf = function
@@ -841,6 +856,8 @@ module Ir_blk = struct
   include Regular.Make(struct
       type t = blk term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Blk"
+      let version = "0.1"
+
       let hash = hash_of_term
 
       let pp_self ppf self =
@@ -897,6 +914,8 @@ module Ir_sub = struct
   include Regular.Make(struct
       type t = sub term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Sub"
+      let version = "0.1"
+
       let hash = hash_of_term
       let pp_self ppf self =
         Format.fprintf ppf "@[<v>sub %s(%s)@.%a%a@]"
@@ -1036,6 +1055,8 @@ module Ir_program = struct
   include Regular.Make(struct
       type t = program term with bin_io, compare, sexp
       let module_name = Some "Bap.Std.Program"
+      let version = "0.1"
+
       let hash = hash_of_term
       let pp_self ppf self =
         Format.fprintf ppf "@[<v>program@.%a@]"
