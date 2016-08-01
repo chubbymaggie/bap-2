@@ -1,4 +1,5 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_types.Std
 open Or_error
 
@@ -10,35 +11,35 @@ type empty
 type asm
 type kinds
 
-type mem = Mem.t with sexp_of
-type kind = Kind.t with compare, sexp
+type mem = Mem.t [@@deriving sexp_of]
+type kind = Kind.t [@@deriving compare, sexp]
 
 type pred = [
   | `Valid
-  |  kind
-] with sexp,compare
+  |  Kind.t
+] [@@deriving sexp, compare]
 
 type 'a oper = {
   oper : int;
   insn : int;
   data : 'a;
-} with bin_io, compare, sexp
+} [@@deriving bin_io, compare, sexp]
 
 type reg_info = {
   reg_code : int;
-  reg_name : string Lazy.t;
-} with bin_io, sexp
+  reg_name : string;
+} [@@deriving bin_io, sexp]
 
 let compare_reg_info {reg_code=x} {reg_code=y} = Int.compare x y
 
 type imm_info = {
   imm_small : int;
   imm_large : int64 sexp_option;
-} with bin_io, compare, sexp
+} [@@deriving bin_io, compare, sexp]
 
-type reg = reg_info oper with bin_io, compare, sexp
-type imm = imm_info oper with bin_io, compare, sexp
-type fmm = float    oper with bin_io, compare, sexp
+type reg = reg_info oper [@@deriving bin_io, compare, sexp]
+type imm = imm_info oper [@@deriving bin_io, compare, sexp]
+type fmm = float    oper [@@deriving bin_io, compare, sexp]
 
 module Table = struct
   (* Bigstring.length is very slow... we should report a bug to the
@@ -71,32 +72,38 @@ module Table = struct
 end
 
 type dis = {
-  id : int;
+  dd : int;
   insn_table : Table.t;
   reg_table  : Table.t;
   asm : bool;
   kinds : bool;
+  mutable closed : bool;
 }
+
+let (!!) dis =
+  if dis.closed then
+    failwith "with_disasm: dis value leaked the scope";
+  dis.dd
 
 module Reg = struct
 
   let create dis ~insn ~oper : reg =
     let data =
-      let reg_code = C.insn_op_reg_code dis.id ~insn ~oper in
+      let reg_code = C.insn_op_reg_code !!dis ~insn ~oper in
       let reg_name =
-        if reg_code = 0 then lazy "Nil"
+        if reg_code = 0 then "Nil"
         else
-          let off = C.insn_op_reg_name dis.id ~insn ~oper in
-          lazy (Table.lookup dis.reg_table off) in
+          let off = C.insn_op_reg_name !!dis ~insn ~oper in
+          (Table.lookup dis.reg_table off) in
       {reg_code; reg_name} in
     {insn; oper; data}
 
   let code op : int = op.data.reg_code
-  let name {data = {reg_name = lazy x}} : string = x
+  let name {data = {reg_name = x}} : string = x
 
   module T = struct
     type t = reg
-    with bin_io, sexp, compare
+      [@@deriving bin_io, sexp, compare]
 
     let module_name = Some "Bap.Std.Reg"
     let version = "0.1"
@@ -117,9 +124,9 @@ module Imm = struct
 
   let create dis ~insn ~oper =
     let data =
-      let imm_small = C.insn_op_imm_small_value dis.id ~insn ~oper in
+      let imm_small = C.insn_op_imm_small_value !!dis ~insn ~oper in
       let imm_large = if fits imm_small then None else
-          Some (C.insn_op_imm_value dis.id ~insn ~oper) in
+          Some (C.insn_op_imm_value !!dis ~insn ~oper) in
       {imm_small; imm_large} in
     {insn; oper; data}
 
@@ -139,7 +146,7 @@ module Imm = struct
 
   module T = struct
     type t = imm
-    with bin_io, sexp, compare
+      [@@deriving bin_io, sexp, compare]
     let module_name = Some "Bap.Std.Imm"
     let version = "0.1"
     let pp fmt t =
@@ -163,13 +170,13 @@ module Fmm = struct
 
   let create dis ~insn ~oper = {
     insn; oper;
-    data = C.insn_op_fmm_value dis.id ~insn ~oper
+    data = C.insn_op_fmm_value !!dis ~insn ~oper
   }
   let to_float x = x.data
 
   module T = struct
     type t = fmm
-    with bin_io, sexp, compare
+      [@@deriving bin_io, sexp, compare]
 
     let module_name = Some "Bap.Std.Fmm"
     let version = "0.1"
@@ -187,7 +194,7 @@ module Op = struct
       | Reg of reg
       | Imm of imm
       | Fmm of fmm
-    with bin_io, compare, sexp
+      [@@deriving bin_io, compare, sexp]
 
     let pr fmt = Format.fprintf fmt
     let pp fmt = function
@@ -238,7 +245,7 @@ module Op = struct
 end
 
 type op = Op.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 let cpred_of_pred : pred -> C.pred = function
   | `Valid -> C.Is_true
@@ -256,7 +263,7 @@ let cpred_of_pred : pred -> C.pred = function
 module Insn = struct
   type ins_info = {
     code : int;
-    name : string Lazy.t;
+    name : string;
     asm  : string;
     kinds: kind list;
     opers: Op.t array;
@@ -264,14 +271,14 @@ module Insn = struct
   type ('a,'k) t = ins_info
 
   let sexp_of_t ins =
-    let lazy name = ins.name in
+    let name = ins.name in
     let ops = Array.to_list ins.opers in
     Sexp.List (Sexp.Atom name :: List.map ops ~f:(fun op ->
         Sexp.Atom (Op.to_string op)))
 
   let compare {code=x} {code=y} = Int.compare x y
 
-  let name {name = lazy x} = x
+  let name {name = x} = x
   let code op = op.code
   let asm  x = x.asm
   let ops  x = x.opers
@@ -282,27 +289,27 @@ module Insn = struct
 
 
   let create ~asm ~kinds dis ~insn =
-    let code = C.insn_code dis.id ~insn in
+    let code = C.insn_code !!dis ~insn in
     let name =
-      let off = C.insn_name dis.id ~insn in
-      lazy (Table.lookup dis.insn_table off) in
+      let off = C.insn_name !!dis ~insn in
+      Table.lookup dis.insn_table off in
     let asm =
       if asm then
-        let data = String.create (C.insn_asm_size dis.id ~insn) in
-        C.insn_asm_copy dis.id ~insn data;
+        let data = String.create (C.insn_asm_size !!dis ~insn) in
+        C.insn_asm_copy !!dis ~insn data;
         data
       else "" in
     let kinds =
       if kinds then
         List.filter_map Kind.all ~f:(fun k ->
             let p = cpred_of_pred (k :> pred) in
-            if C.is_supported dis.id p
-            then Option.some_if (C.insn_satisfies dis.id ~insn p) k
+            if C.is_supported !!dis p
+            then Option.some_if (C.insn_satisfies !!dis ~insn p) k
             else None)
       else [] in
     let opers =
-      Array.init (C.insn_ops_size dis.id ~insn) ~f:(fun oper ->
-          match C.insn_op_type dis.id ~insn ~oper with
+      Array.init (C.insn_ops_size !!dis ~insn) ~f:(fun oper ->
+          match C.insn_op_type !!dis ~insn ~oper with
           | C.Reg -> Op.Reg Reg.(create dis ~insn ~oper)
           | C.Imm -> Op.Imm Imm.(create dis ~insn ~oper)
           | C.Fmm -> Op.Fmm Fmm.(create dis ~insn ~oper)
@@ -334,23 +341,23 @@ type (+'a,+'k) insns = (mem * ('a,'k) insn option) list
 
 module Pred = struct
   include Comparable.Make(struct
-      type t = pred with compare, sexp
+      type t = pred [@@deriving compare, sexp]
     end)
 end
 
 module Preds = Pred.Set
-type preds = Preds.t with compare, sexp
+type preds = Preds.t [@@deriving compare, sexp]
 
 type step = {
   mem : mem;
   off : int;
   preds : preds;
-} with sexp_of
+} [@@deriving sexp_of]
 
 type ('a,'k) maybe_insn = mem * ('a,'k) insn option
 
 let sexp_of_maybe_ins (_,insn) =
-  <:sexp_of<insn option>> insn
+  [%sexp_of:insn option] insn
 
 
 type (+'a,+'k,'s,'r) state = {
@@ -364,7 +371,7 @@ type (+'a,+'k,'s,'r) state = {
   invalid : (('a,'k,'s,'r) state -> mem -> 's -> 'r) option sexp_opaque;
   hit : (('a,'k,'s,'r) state -> mem -> (asm,kinds) insn -> 's -> 'r)
       option sexp_opaque;
-} with sexp_of
+} [@@deriving sexp_of]
 
 let create_state ?(backlog=8) ?(stop_on=[]) ?stopped ?invalid ?hit dis
     mem ~return  = {
@@ -378,8 +385,8 @@ let create_state ?(backlog=8) ?(stop_on=[]) ?stopped ?invalid ?hit dis
 }
 
 let insn_mem s ~insn : mem =
-  let off = C.insn_offset s.dis.id ~insn in
-  let words = C.insn_size s.dis.id ~insn in
+  let off = C.insn_offset !!(s.dis) ~insn in
+  let words = C.insn_size !!(s.dis) ~insn in
   let from = Addr.(Mem.min_addr s.current.mem ++ off) in
   ok_exn (Mem.view s.current.mem ~from ~words)
 
@@ -391,7 +398,7 @@ let set_memory dis p : unit =
   let buf = Mem.to_buffer p.mem in
   let addr = Mem.min_addr p.mem in
   let addr = ok_exn (Addr.to_int64 addr) in
-  C.set_memory dis.id addr (base buf) ~off:(pos buf) ~len:(length buf)
+  C.set_memory !!dis addr (base buf) ~off:(pos buf) ~len:(length buf)
 
 let update_state s current = {
   s with
@@ -404,16 +411,16 @@ let memory s = s.current.mem
 let with_preds s (ps : pred list) =
   let add p =
     let p = cpred_of_pred p in
-    if C.is_supported s.dis.id p then
-      C.predicates_push s.dis.id p in
+    if C.is_supported !!(s.dis) p then
+      C.predicates_push !!(s.dis) p in
   let ps = Preds.of_list ps in
   let drop = Preds.diff s.current.preds ps in
   if not(Preds.is_empty drop) then
     Preds.iter (Preds.diff ps s.current.preds) ~f:add
   else begin
-    C.predicates_clear s.dis.id;
+    C.predicates_clear !!(s.dis);
     Preds.iter ps ~f:(add);
-    C.predicates_push s.dis.id C.Is_invalid;
+    C.predicates_push !!(s.dis) C.Is_invalid;
   end;
   {s with current = {s.current with preds = ps}}
 
@@ -430,20 +437,20 @@ let preds s = Preds.to_list s.current.preds
 let addr s = Addr.(Mem.min_addr s.current.mem ++ s.current.off)
 
 let step s data =
-  C.insns_clear s.dis.id;
+  C.insns_clear !!(s.dis);
   let rec loop s data =
-    C.run s.dis.id;
-    let off = C.offset s.dis.id in
+    C.run !!(s.dis);
+    let off = C.offset !!(s.dis) in
     let s = update_state s {s.current with off} in
-    let n = C.insns_size s.dis.id in
+    let n = C.insns_size !!(s.dis) in
     assert (n > 0);
     let insn = n - 1 in
-    let stop = C.insn_size s.dis.id ~insn = 0 in
+    let stop = C.insn_size !!(s.dis) ~insn = 0 in
     let n = if stop then max 0 (n - 1) else n in
     let {asm; kinds} = s.dis in
     let insns = Array.init n ~f:(fun insn -> begin
           let is_valid =
-            not(C.insn_satisfies s.dis.id ~insn C.Is_invalid) in
+            not(C.insn_satisfies !!(s.dis) ~insn C.Is_invalid) in
           insn_mem s ~insn,
           Option.some_if is_valid
             (Insn.create ~asm ~kinds s.dis ~insn)
@@ -452,7 +459,7 @@ let step s data =
     if stop then match s.stopped with
       | Some f -> f s data
       | None -> s.return data
-    else if C.insn_satisfies s.dis.id ~insn C.Is_invalid
+    else if C.insn_satisfies !!(s.dis) ~insn C.Is_invalid
     then match s.invalid with
       | Some f -> f s (insn_mem s ~insn) data
       | None -> loop s data
@@ -479,18 +486,28 @@ let back s data =
   step { s with current; history} data
 
 let create ?(debug_level=0) ?(cpu="") ~backend triple =
-  let id = match C.create ~backend ~triple ~cpu ~debug_level with
+  let dd = match C.create ~backend ~triple ~cpu ~debug_level with
     | n when n >= 0 -> Ok n
     | -2 -> errorf "Unknown backend: %s" backend
     | -3 -> errorf "Unsupported target: %s %s" triple cpu
     |  n -> errorf "Disasm.Basic: Unknown error %d" n in
-  id >>= fun id -> return {
-    id;
-    insn_table = Table.create (C.insn_table id);
-    reg_table = Table.create (C.reg_table id);
+  dd >>= fun dd -> return {
+    dd;
+    insn_table = Table.create (C.insn_table dd);
+    reg_table = Table.create (C.reg_table dd);
     asm = false;
     kinds = false;
+    closed = false;
   }
+
+
+let close dis =
+  C.delete dis.dd;
+  dis.closed <- true
+
+let with_disasm ?debug_level ?cpu ~backend triple ~f =
+  create ?debug_level ?cpu ~backend triple >>= fun dis ->
+  f dis >>| fun res -> close dis; res
 
 type ('a,'k) t = dis
 
@@ -502,12 +519,12 @@ let run ?backlog ?(stop_on=[]) ?invalid ?stopped ?hit dis ~return ~init mem =
   jump state (memory state) init
 
 let store_kinds d =
-  C.store_predicates d.id true;
+  C.store_predicates !!d true;
   {d with kinds = true}
 
 
 let store_asm d =
-  C.store_asm_string d.id true;
+  C.store_asm_string !!d true;
   {d with asm = true}
 
 let insn_of_mem dis mem =
@@ -523,6 +540,9 @@ let insn_of_mem dis mem =
         split mem' >>= fun r -> stop s (mem',None,r))
 
 
+let available_backends () =
+  C.backends_size () |> List.init ~f:C.backend_name
+
 module Trie = struct
 
   type s = State : (_,_,_,_) state -> s
@@ -533,7 +553,7 @@ module Trie = struct
 
   module Key = struct
     type t = key
-    type token = int * Op.t array with bin_io, compare, sexp
+    type token = int * Op.t array [@@deriving bin_io, compare, sexp]
     let length = fst
     let nth_token (_, State s) i =
       match s.insns.(i) with

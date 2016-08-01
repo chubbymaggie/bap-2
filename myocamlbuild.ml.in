@@ -1,10 +1,4 @@
-let oasis_env =
-  BaseEnvLight.load
-    ~filename:MyOCamlbuildBase.env_filename
-    ~allow_empty:true
-    ()
 let nonempty = function (A s) -> String.length s <> 0 | _ -> true
-let expand s = BaseEnvLight.var_expand s oasis_env;;
 
 (* the piqi support is rather fragile *)
 let piqic_rule () : unit =
@@ -16,9 +10,9 @@ let piqic_rule () : unit =
            A (expand "${piqic}");
            A (expand "${piqic_flags}");
            A "-C";
-           A "piqi";
+           A "lib/bap_piqi";
            A "-I";
-           A "../piqi";
+           A "../lib/bap_piqi";
            A (env "%.piqi");
            A"--multi-format"])));;
 
@@ -48,11 +42,29 @@ end
 
 let mark_tags () =
   let open Ocamlbuild_compat in
-  mark_tag_used "pkg_core_bench";
-  mark_tag_used "tests";
-  mark_tag_used "pkg_piqirun"
+  List.iter mark_tag_used [
+    "pkg_core_bench";
+    "tests";
+    "pkg_piqirun";
+    "pkg_core";
+  ]
+
+(* we will pass this manually, util it is fixed *)
+let pr_6184_hack = function
+  | After_rules ->
+    (* Pass -predicates to ocamldep *)
+    pflag ["ocaml"; "ocamldep"] "predicate" (fun s -> S [A "-predicates"; A s]);
+    package_default.MyOCamlbuildBase.lib_ocaml |>
+    List.iter (fun (lib,_,_) ->
+        flag ["ocaml"; "link"; "use_"^lib]
+          (S [A "-predicates"; A ("used_"^lib)]));
+  | _ -> ()
+
 
 let () =
   mark_tags ();
   Ocamlbuild_plugin.dispatch (fun hook ->
-      dispatch hook; dispatch_default hook)
+      dispatch hook;
+      dispatch_default hook;
+      pr_6184_hack hook;
+      Ppx_driver_ocamlbuild.dispatch hook)

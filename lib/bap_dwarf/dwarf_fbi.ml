@@ -1,7 +1,7 @@
 open Core_kernel.Std
 open Or_error
 
-open Bap_types.Std
+open Bap.Std
 open Dwarf_types
 
 
@@ -14,17 +14,17 @@ module Value = struct
   type hi_addr =
     | Abs of addr
     | Rel of int64
-  with sexp,bin_io,compare
+  [@@deriving sexp, bin_io, compare]
 
   type t =
     | Id of string
     | Lo of addr
     | Hi of hi_addr
-  with sexp,bin_io,compare,variants
+  [@@deriving sexp, bin_io, compare, variants]
 end
 
 type 'a reader = 'a Dwarf_input.reader
-type value = Value.t with sexp,bin_io,compare
+type value = Value.t [@@deriving sexp, bin_io, compare]
 type scheme = value option reader list
 type table = scheme Table.t
 
@@ -35,7 +35,7 @@ module Fn = struct
     type t = {
       pc_hi: addr sexp_option;
       pc_lo: addr;
-    } with sexp,bin_io,compare,fields
+    } [@@deriving sexp, bin_io, compare, fields]
 
     let int_of_int64 off : int Or_error.t =
       Result.of_option
@@ -51,7 +51,7 @@ module Fn = struct
           Some Addr.(pc_lo ++ off) in
       pc_hi >>| fun pc_hi -> {pc_lo; pc_hi}
     let hash = Hashtbl.hash
-    let module_name =  "Bap.Std.Dwarf.Fn"
+    let module_name =  "Bap_Dwarf.Std.Fn"
     let version = "0.1"
   end
   include T
@@ -61,7 +61,7 @@ module Fn = struct
     end)
 end
 
-type fn = Fn.t with sexp,bin_io,compare
+type fn = Fn.t [@@deriving sexp, bin_io, compare]
 type t = (string * fn) Sequence.t
 
 type spec = {

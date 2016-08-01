@@ -1,0 +1,6 @@
+REC
+PKG cmdliner
+
+B ../../_build/lib/bap_api
+
+FLG -short-paths

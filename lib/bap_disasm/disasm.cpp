@@ -1,8 +1,10 @@
+#undef NDEBUG
 #include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
+#include <iterator>
 #include <cassert>
 #include <cstring>
 
@@ -80,7 +82,7 @@ class disassembler {
     vector<string>  asms;
     string asm_cache;
     vector<predicates> insn_preds;
-    int64_t base;
+    uint64_t base;
     int off;
     bool store_preds, store_asms;
 
@@ -122,7 +124,7 @@ public:
         };
     }
 
-    void set_memory(int64_t addr, const char *data, int offset, int length) {
+    void set_memory(uint64_t addr, const char *data, int offset, int length) {
         this->base = addr;
         this->off  = 0;
         dis->set_memory({data, addr, {offset, length}});
@@ -172,8 +174,8 @@ public:
     }
 
     bool satisfies(bap_disasm_insn_p_type p, int n) {
-        if (p == is_invalid && insns[n].code == 0) {
-            return true;
+        if (p == is_invalid) {
+            return (insns[n].code == 0);
         }
 
         if (store_preds) {
@@ -181,7 +183,7 @@ public:
             auto beg = insn_preds[n].begin(), end = insn_preds[n].end();
             return std::binary_search(beg, end, p);
         } else {
-            assert(n == queue_size() - 1);
+            assert (n == queue_size() - 1);
             return dis->satisfies(p);
         }
     }
@@ -294,6 +296,17 @@ void bap_disasm_delete(bap_disasm_type d) {
     disassemblers[d].reset();
 }
 
+int bap_disasm_backends_size() {
+    return backends.size();
+}
+
+const char* bap_disasm_backend_name(int i) {
+    assert(i >=0 && i < bap_disasm_backends_size());
+    auto p = backends.cbegin();
+    advance(p, i);
+    return p->first.c_str();
+}
+
 static inline shared_ptr<disassembler> get(int d) {
     assert(d >= 0 && d < disassemblers.size());
     auto dis = disassemblers[d];
@@ -302,7 +315,7 @@ static inline shared_ptr<disassembler> get(int d) {
 }
 
 
-void bap_disasm_set_memory(int d, int64_t base, const char *data, int off, int len) {
+void bap_disasm_set_memory(int d, uint64_t base, const char *data, int off, int len) {
     get(d)->set_memory(base, data, off, len);
 }
 
@@ -411,7 +424,6 @@ int bap_disasm_insn_op_reg_name(int d, int i, int op) {
 int bap_disasm_insn_op_reg_code(int d, int i, int op) {
     return get(d)->oper_value<reg>(i,op).code;
 }
-
 
 imm bap_disasm_insn_op_imm_value(int d, int i, int op) {
     return get(d)->oper_value<imm>(i,op);

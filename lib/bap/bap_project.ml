@@ -1,11 +1,28 @@
 open Core_kernel.Std
-open Bap_plugins.Std
+open Regular.Std
+open Graphlib.Std
+open Bap_future.Std
 open Bap_types.Std
 open Bap_image_std
 open Bap_disasm_std
 open Bap_sema.Std
-open Or_error
+open Or_error.Monad_infix
 open Format
+
+module Event = Bap_event
+include Bap_self.Create()
+
+let find name = FileUtil.which name
+
+module State = struct
+  type t = {
+    tids : Tid.Tid_generator.t;
+    name : Tid.Name_resolver.t;
+    vars : Var.Id.t;
+  }
+end
+
+type state = State.t
 
 type t = {
   arch    : arch;
@@ -14,10 +31,88 @@ type t = {
   storage : dict;
   program : program term;
   symbols : Symtab.t;
-} with fields
+  state : state;
+  passes  : string list;
+} [@@deriving fields]
 
-type bound = [`min | `max] with sexp
-type spec = [`name | bound] with sexp
+module Info = struct
+  let file,got_file = Stream.create ()
+  let arch,got_arch = Stream.create ()
+  let data,got_data = Stream.create ()
+  let code,got_code = Stream.create ()
+  let img, got_img  = Stream.create ()
+  let cfg, got_cfg  = Stream.create ()
+  let symtab,got_symtab = Stream.create ()
+  let program,got_program = Stream.create ()
+end
+
+module Input = struct
+  type result = {
+    arch : arch;
+    data : value memmap;
+    code : value memmap;
+    file : string;
+  }
+
+  type t = unit -> result
+
+  let create arch file ~code ~data () = {
+    arch; file; code; data
+  }
+
+  let loaders = String.Table.create ()
+  let register_loader name loader =
+    Hashtbl.set loaders ~key:name ~data:loader
+
+  let is_code v =
+    Value.get Image.segment v |>
+    Option.value_map ~default:false ~f:Image.Segment.is_executable
+
+  let filter_code mem = Memmap.filter mem ~f:is_code
+
+  let of_image file img = {
+    arch = Image.arch img;
+    data = Image.memory img;
+    code = filter_code (Image.memory img);
+    file;
+  }
+
+  let of_image ?loader filename =
+    Image.create ?backend:loader filename >>| fun (img,warns) ->
+    List.iter warns ~f:(fun e -> warning "%a" Error.pp e);
+    Signal.send Info.got_img img;
+    of_image filename img
+
+  let from_image ?loader filename () =
+    of_image ?loader filename |> ok_exn
+
+  let file ?loader ~filename = match loader with
+    | None -> from_image filename
+    | Some name -> match Hashtbl.find loaders name with
+      | None -> from_image ?loader filename
+      | Some load -> load filename
+
+  let null arch : addr =
+    Addr.of_int 0 ~width:(Arch.addr_size arch |> Size.in_bits)
+
+  let binary ?base arch ~filename () =
+    let big = Bap_fileutils.readfile filename in
+    if Bigstring.length big = 0 then invalid_arg "file is empty";
+    let base = Option.value base ~default:(null arch) in
+    let mem = Memory.create (Arch.endian arch) base big |> ok_exn in
+    let section = Value.create Image.section "bap.user" in
+    let data = Memmap.add Memmap.empty mem section in
+    {arch; data; code = data; file = filename}
+
+  let available_loaders () =
+    Hashtbl.keys loaders @ Image.available_backends ()
+end
+
+type input = Input.t
+type project = t
+
+type bound = [`min | `max] [@@deriving sexp]
+type spec = [`name | bound] [@@deriving sexp]
 
 type subst = [
   | `section of spec
@@ -26,69 +121,164 @@ type subst = [
   | `block of bound
   | `asm
   | `bil
-] with sexp
+] [@@deriving sexp]
 
 
-let from_mem ?name ?roots arch mem : t Or_error.t =
-  let roots = Option.value ~default:[Memory.min_addr mem] roots in
-  let disasm = disassemble ~roots arch mem in
-  let cfg = Disasm.blocks disasm in
-  let symbols = Symtab.reconstruct ?name ~roots cfg in
-  let program = Program.lift symbols in
-  let memory =
-    Memmap.add Memmap.empty mem (Value.create Image.section "bap.user") in
+let roots rooter = match rooter with
+  | None -> []
+  | Some r -> Rooter.roots r |> Seq.to_list
+
+
+let fresh_state () = State.{
+    tids = Tid.Tid_generator.fresh ();
+    name = Tid.Name_resolver.fresh ();
+    vars = Var.Id.fresh ();
+  }
+
+module MVar = struct
+  type 'a t = {
+    mutable value   : 'a Or_error.t;
+    mutable updated : bool;
+    compare : 'a -> 'a -> int;
+  }
+
+  let create ?(compare=fun _ _ -> 1) x =
+    {value=Ok x; updated=true; compare}
+  let peek x = ok_exn x.value
+  let read x = x.updated <- false; peek x
+  let is_updated x = x.updated
+  let write x v =
+    if x.compare (ok_exn x.value) v <> 0 then x.updated <- true;
+    x.value <- Ok v
+
+  let fail x err =
+    x.value <- Error err;
+    x.updated <- true
+
+  let ignore x =
+    Result.iter_error x.value ~f:Error.raise;
+    x.updated <- false
+
+  let from_source s =
+    let x = create None in
+    Stream.observe s (function
+        | Ok v -> write x (Some v)
+        | Error e -> fail x e);
+    x
+
+  let from_optional_source = function
+    | None -> create None
+    | Some s -> from_source s
+end
+
+let phase_triggered phase mvar =
+  let trigger = MVar.is_updated mvar in
+  if trigger then Signal.send phase (MVar.read mvar);
+  trigger
+
+module Cfg = Graphs.Cfg
+
+let empty_disasm = Disasm.create Cfg.empty
+
+let pp_mem ppf mem =
+  fprintf ppf "%s"
+    (Addr.string_of_value (Memory.min_addr mem))
+
+let pp_disasm_error ppf = function
+  | `Failed_to_disasm mem ->
+    fprintf ppf "can't disassemble insnt at address %a" pp_mem mem
+  | `Failed_to_lift (mem,insn,err) ->
+    fprintf ppf "<%s>: %a"
+      (Disasm_expert.Basic.Insn.asm insn) Error.pp err
+
+let union_memory m1 m2 =
+  Memmap.to_sequence m2 |> Seq.fold ~init:m1 ~f:(fun m1 (mem,v) ->
+      Memmap.add m1 mem v)
+
+let create_exn
+    ?disassembler:backend
+    ?brancher
+    ?symbolizer
+    ?rooter
+    ?reconstructor
+    (read : input)  =
+  let state = fresh_state () in
   let storage = Dict.empty in
-  Ok ({arch; disasm; memory; storage; program; symbols})
+  let mrooter = MVar.from_optional_source rooter in
+  let mbrancher = MVar.from_optional_source brancher in
+  let msymbolizer = MVar.from_optional_source symbolizer in
+  let mreconstructor = MVar.from_optional_source reconstructor in
+  let cfg     = MVar.create ~compare:Cfg.compare Cfg.empty in
+  let symtab  = MVar.create ~compare:Symtab.compare Symtab.empty in
+  let program = MVar.create ~compare:Program.compare (Program.create ()) in
+  let {Input.arch; data; code; file} = read () in
+  Signal.send Info.got_file file;
+  Signal.send Info.got_arch arch;
+  Signal.send Info.got_data data;
+  Signal.send Info.got_code code;
+  let rec loop () =
+    let updated = MVar.is_updated mbrancher || MVar.is_updated mrooter in
+    let brancher = MVar.read mbrancher
+    and rooter   = MVar.read mrooter in
+    let disassemble () =
+      let run mem =
+        let dis =
+          Disasm.With_exn.of_mem ?backend ?brancher ?rooter arch mem in
+        Disasm.errors dis |>
+        List.iter ~f:(fun e -> warning "%a" pp_disasm_error e);
+        Disasm.cfg dis in
+      Memmap.to_sequence code |>
+      Seq.fold ~init:Cfg.empty ~f:(fun cfg (mem,_) ->
+          Graphlib.union (module Cfg) cfg (run mem)) |>
+      MVar.write cfg  in
+    if updated then disassemble ();
+    let is_cfg_updated = phase_triggered Info.got_cfg cfg in
+    let g = MVar.read cfg in
+    let reconstruct () =
+      if is_cfg_updated || MVar.is_updated msymbolizer then
+        let symbolizer = match MVar.read msymbolizer with
+          | None -> Symbolizer.empty
+          | Some s -> s in
+        let name = Symbolizer.resolve symbolizer in
+        let syms =
+          Reconstructor.(run (default name (roots rooter)) g) in
+        MVar.write symtab syms in
+    if is_cfg_updated || MVar.is_updated mreconstructor
+    then match MVar.read mreconstructor with
+      | Some r ->
+        MVar.ignore msymbolizer;
+        MVar.write symtab (Reconstructor.run r g)
+      | None -> reconstruct ()
+    else reconstruct ();
+    let is_symtab_updated = phase_triggered Info.got_symtab symtab in
+    if is_symtab_updated
+    then MVar.write program (Program.lift (MVar.read symtab));
+    let _ = phase_triggered Info.got_program program in
+    if MVar.is_updated mrooter ||
+       MVar.is_updated mbrancher ||
+       MVar.is_updated msymbolizer ||
+       MVar.is_updated mreconstructor then loop ()
+    else {
+      disasm = Disasm.create g;
+      program = MVar.read program;
+      symbols = MVar.read symtab;
+      arch; memory=union_memory code data; storage; state; passes=[]
+    } in
+  loop ()
 
-let null arch : addr =
-  Addr.of_int 0 ~width:(Arch.addr_size arch |> Size.in_bits)
+let create
+    ?disassembler ?brancher ?symbolizer ?rooter ?reconstructor input =
+  Or_error.try_with (fun () ->
+      create_exn
+        ?disassembler ?brancher ?symbolizer ?rooter ?reconstructor input)
 
-let from_bigstring ?base ?name ?roots arch big : t Or_error.t =
-  let base = Option.value base ~default:(null arch) in
-  Memory.create (Arch.endian arch) base big >>=
-  from_mem ?name ?roots arch
-
-let ok _ = Ok ()
-
-let from_string ?base ?name ?roots arch s : t Or_error.t =
-  from_bigstring ?base ?name ?roots arch (Bigstring.of_string s)
-
-let from_image ?(name=fun _ -> None) ?(roots=[]) img =
-  let image_roots = Image.symbols img |>
-                    Table.regions |> Seq.map ~f:Memory.min_addr |>
-                    Seq.to_list in
-  let name addr = match name addr with
-    | Some name -> Some name
-    | None -> Table.find_addr (Image.symbols img) addr |>
-              Option.map ~f:(fun (_,sym) -> Image.Symbol.name sym) in
-  let roots = match roots @ image_roots with
-    | [] -> [Image.entry_point img]
-    | xs -> xs in
-  let disasm = disassemble_image ~roots img in
-  let cfg = Disasm.blocks disasm in
-  let symbols = Symtab.reconstruct ~name ~roots cfg in
-  let program = Program.lift symbols in
-  let memory = Image.memory img in
-  let storage = Option.value_map (Image.filename img)
-      ~default:Dict.empty
-      ~f:(fun name -> Dict.set Dict.empty filename name) in
-  let arch = Image.arch img in
-  return {arch; disasm; memory; storage; program; symbols}
-
-
-let from_file ?(on_warning=ok) ?backend ?name ?roots filename =
-  Image.create ?backend filename >>= fun (img,warns) ->
-  List.map warns ~f:on_warning |> Or_error.combine_errors_unit
-  >>= fun () -> from_image ?name ?roots img
-
+let restore_state {state={State.tids; name}} =
+  Tid.Tid_generator.store tids;
+  Tid.Name_resolver.store name
 
 let with_memory = Field.fset Fields.memory
 let with_symbols = Field.fset Fields.symbols
 let with_program = Field.fset Fields.program
-
-let tag_memory t tag mem x =
-  with_memory t @@
-  Memmap.add t.memory mem (Value.create tag x)
 
 let with_storage = Field.fset Fields.storage
 
@@ -135,13 +325,17 @@ let substitute project mem tag value : t =
         | None -> None) in
   let find_section = find_tag Image.section in
   let find_symbol mem =
-    Symtab.fns_of_addr project.symbols (Memory.min_addr mem) |>
+    Symtab.owners project.symbols (Memory.min_addr mem) |>
     List.hd |>
-    Option.map ~f:(fun fn ->
-        Block.memory (Symtab.entry_of_fn fn), Symtab.name_of_fn fn) in
+    Option.map ~f:(fun (name,entry,_) ->
+        Block.memory entry, name) in
   let find_block mem =
-    Table.find_addr (Disasm.blocks project.disasm)
-      (Memory.min_addr mem) in
+    Symtab.dominators project.symbols mem |>
+    List.find_map ~f:(fun (_,_,cfg) ->
+        Seq.find_map (Cfg.nodes cfg) ~f:(fun block ->
+            if Addr.(Block.addr block = Memory.min_addr mem)
+            then Some (Block.memory block, block)
+            else None)) in
   let subst_section (mem,name) = function
     | #bound as b -> addr b mem
     | `name -> name in
@@ -152,9 +346,12 @@ let substitute project mem tag value : t =
   let bil insn = asprintf "%a" Bil.pp (Insn.bil insn) in
   let subst_disasm mem out =
     let inj = match out with `asm -> asm | `bil -> bil in
-    disassemble project.arch mem |> Disasm.insns |>
-    Seq.map ~f:(fun (_,insn) -> inj insn) |> Seq.to_list |>
-    String.concat ~sep:"\n" in
+    match Disasm.of_mem project.arch mem with
+    | Error er -> "<failed to disassemble memory region>"
+    | Ok dis ->
+      Disasm.insns dis |>
+      Seq.map ~f:(fun (_,insn) -> inj insn) |> Seq.to_list |>
+      String.concat ~sep:"\n" in
 
   let apply_subst find mem subst spec value =
     match find mem with
@@ -179,135 +376,116 @@ module DList = Doubly_linked
 
 type pass = {
   name : string;
-  main : string array -> t -> t;
-  deps : string list;
-}
-
-type 'a register = ?deps:string list -> string -> 'a -> unit
+  main : (t -> t) sexp_opaque;
+  deps : string sexp_list;
+  auto : bool;
+  once : bool;
+  starts     : float stream sexp_opaque;
+  finishes   : float stream sexp_opaque;
+  failures   : float stream sexp_opaque;
+  successes  : float stream sexp_opaque;
+} [@@deriving sexp_of]
 
 let passes : pass DList.t = DList.create ()
-let errors : Error.t String.Table.t = String.Table.create ()
+let pass_registrations,pass_registered = Stream.create ()
 
 let forget : pass DList.Elt.t -> unit = fun _ -> ()
 
-let find name : pass option =
-  DList.find passes ~f:(fun p -> p.name = name)
 
-let register_pass_with_args ?(deps=[]) name main : unit =
-  DList.insert_last passes {name; main; deps} |> forget
+let name_of_bundle () =
+  let module Self = Bap_self.Create() in
+  Self.name
 
-let register_pass_with_args' ?deps n v : unit =
-  register_pass_with_args ?deps n (fun a p -> v a p; p)
+let register_pass ?(autorun=false) ?(runonce=autorun) ?(deps=[]) ?name main : unit =
+  let pref = name_of_bundle () in
+  let name = match name with
+    | None -> pref
+    | Some name -> pref ^ "-" ^ name in
+  let starts,started = Stream.create () in
+  let successes,succeded = Stream.create () in
+  let failures,failed = Stream.create () in
+  let finishes =
+    Stream.either successes failures |>
+    Stream.map ~f:Either.value in
+  let now () = Unix.gettimeofday () in
+  let main project =
+    Signal.send started (now ());
+    try
+      let project = main project in
+      Signal.send succeded (now ());
+      project
+    with exn ->
+      Signal.send failed (now ());
+      raise exn in
+  let pass = {
+    name; main; deps;
+    once = runonce; auto = autorun;
+    starts; finishes;
+    failures; successes;
+  } in
+  DList.insert_last passes pass |> forget;
+  Signal.send pass_registered pass
 
-let register_pass ?deps n v : unit =
-  register_pass_with_args ?deps n (fun _arg p -> v p)
+let register_pass' ?autorun ?runonce ?deps ?name v : unit =
+  register_pass ?autorun ?runonce ?deps ?name (fun p -> v p; p)
 
-let register_pass' ?deps n v : unit =
-  register_pass ?deps n (fun p -> v p; p)
+type second = float
+module Pass = struct
+  type t = pass [@@deriving sexp_of]
+  type error =
+    | Unsat_dep of pass * string
+    | Runtime_error of pass * exn
+    [@@deriving variants, sexp_of]
 
+  let find name : pass option =
+    DList.find passes ~f:(fun p -> p.name = name)
 
-let prepare_args argv name =
-  let prefix = "--" ^ name ^ "-" in
-  let is_key = String.is_prefix ~prefix:"-" in
-  Array.fold argv ~init:([],`drop) ~f:(fun (args,act) arg ->
-      let take arg = ("--" ^ arg) :: args in
-      if arg = argv.(0) then (name::args,`drop)
-      else match String.chop_prefix arg ~prefix, act with
-        | None,`take when is_key arg -> args,`drop
-        | None,`take -> arg::args,`drop
-        | None,`drop -> args,`drop
-        | Some arg,_ when String.mem arg '=' -> take arg,`drop
-        | Some arg,_ -> take arg,`take) |>
-  fst |> List.rev |> Array.of_list
+  exception Failed of error [@@deriving sexp]
+  let fail error = raise (Failed error)
 
-type error =
-  | Not_loaded of string
-  | Is_duplicate of string
-  | Not_found of string
-  | Doesn't_register of string
-  | Load_failed of string * Error.t
-  | Runtime_error of string * exn
-with variants, sexp_of
+  let is_evaled pass proj =
+    List.exists proj.passes ~f:(fun name -> name = pass.name)
 
-exception Pass_failed of error with sexp
-let plugin_failure error = raise (Pass_failed error)
-let fail name error = plugin_failure (error name)
+  let eval pass proj = {
+    (pass.main proj) with
+    passes = pass.name :: proj.passes
+  }
 
-let load ?library name : unit =
-  match find name with
-  | Some _ -> ()
-  | None -> match Plugin.find_plugin ?library name with
-    | None -> fail name not_found
-    | Some p -> match Plugin.load p with
-      | Error err -> plugin_failure (load_failed name err)
-      | Ok () ->
-        match find name with
-        | Some _ -> ()
-        | None -> fail name doesn't_register
+  let rec exec proj pass =
+    if pass.once && is_evaled pass proj then proj
+    else
+      let deps = List.map pass.deps ~f:(fun name -> match find name with
+          | None -> fail @@ unsat_dep pass name
+          | Some dep -> dep) in
+      let proj = List.fold deps ~init:proj ~f:exec in
+      try eval pass proj with
+        exn -> fail @@ runtime_error pass exn
 
-(* load dependencies until a fixpoint or error condition are reached  *)
-let load_deps ?library () : unit =
-  let step () =
-    DList.to_list passes |>
-    List.iter ~f:(fun pass -> List.iter pass.deps ~f:(load ?library)) in
-  let rec loop () =
-    let m = DList.length passes in
-    step ();
-    if m <> DList.length passes then loop () in
-  loop ()
+  let run_exn pass proj = exec proj pass
 
+  let run pass proj : (project,error) Result.t =
+    try Ok (exec proj pass) with
+    | Failed error -> Error error
 
-let rec run ?library ?(argv=Sys.argv) (passed,proj) name =
-  if List.mem passed name then (passed,proj)
-  else
-    let pass = match find name with
-      | Some pass -> pass
-      | None -> fail name not_loaded in
-    let (passed,proj) = List.fold pass.deps ~init:(passed,proj)
-        ~f:(run ?library ~argv) in
-    let argv = prepare_args argv pass.name in
-    let proj = try pass.main argv proj with
-        exn -> plugin_failure (runtime_error name exn) in
-    name :: passed, proj
+  let name p = p.name
+  let autorun p  = p.auto
+  let starts p = p.starts
+  let finishes p = p.finishes
+  let failures p = p.failures
+  let successes p = p.successes
+end
 
-let prepare_passes ?library ?argv () =
-  let passes = DList.to_list passes |> List.map ~f:(fun p -> p.name) in
-  match List.find_a_dup passes with
-  | Some name -> fail name is_duplicate
-  | None -> load_deps ?library ()
+let passes () = DList.to_list passes
+let find_pass = Pass.find
 
-let run_pass_exn ?library ?argv proj pass =
-  prepare_passes ?library ?argv ();
-  run ?library ?argv ([],proj) pass |> snd
+let () =
+  let stream f = Stream.map Info.img ~f:(fun img -> Ok (f img)) in
+  let rooter = stream Rooter.of_image in
+  let symbolizer = stream Symbolizer.of_image in
+  Rooter.Factory.register "internal" rooter;
+  Symbolizer.Factory.register "internal" symbolizer
 
-let make_error = function
-  | Not_loaded name ->
-    errorf "plugin %s wasn't not loaded in the system" name
-  | Is_duplicate name ->
-    errorf "plugin with name %s was registered more than once" name
-  | Not_found name ->
-    errorf "can't find library for plugin %s" name
-  | Doesn't_register name ->
-    errorf "plugin %s didn't register any passes" name
-  | Load_failed (name,err) ->
-    errorf "the following error has occured when loading %s:%s"
-      name (Error.to_string_hum err)
-  | Runtime_error (name,exn) ->
-    errorf "plugin %s failed in runtime with exception %s"
-      name (Exn.to_string exn)
-
-let run_pass ?library ?argv proj name : t Or_error.t =
-  try Ok (run_pass_exn ?library ?argv proj name) with
-  | Pass_failed error -> make_error error
-  | exn -> errorf "unexpected error when running plugins: %s"
-             (Exn.to_string exn)
-
-let passes_exn ?library () =
-  load_deps ?library ();
-  DList.to_list passes |> List.map ~f:(fun p -> p.name)
-
-let passes ?library () =
-  try Ok (passes_exn ?library ()) with
-  | Pass_failed err -> make_error err
-  | exn -> errorf "unexpecting error, when loading dependencies: %s"
-             (Exn.to_string exn)
+include Data.Make(struct
+    type nonrec t = t
+    let version = "0.1"
+  end)

@@ -9,6 +9,7 @@
  *)
 
 open Core_kernel.Std
+open Graphlib.Std
 open Bap.Std
 open OUnit2
 open Format
@@ -55,16 +56,16 @@ module Test_algo(Gl : Graph_for_algo) = struct
   let timestamps ty gr : int * ('n,node_info,_) Map.t =
     Graphlib.depth_first_search ty gr ~init:(0,Node.Map.empty)
       ~enter_node:(fun pre node (time,stamps) ->
-          time + 1, Map.change stamps node @@ function
-          | None -> Some {empty with pre; enter = time}
-          | _ -> assert_failure "Node was entered several times")
+          time + 1, Map.change stamps node ~f:(function
+              | None -> Some {empty with pre; enter = time}
+              | _ -> assert_failure "Node was entered several times"))
       ~leave_node:(fun rpost node (time,stamps) ->
-          time + 1, Map.change stamps node @@ function
-          | None -> assert_failure "Node was left without entering"
-          | Some info ->
-            assert_bool "Lemma 1.2: entry[x] < leave[x]" @@
-            (info.enter < time);
-            Some {info with rpost; leave = time})
+          time + 1, Map.change stamps node ~f:(function
+              | None -> assert_failure "Node was left without entering"
+              | Some info ->
+                assert_bool "Lemma 1.2: entry[x] < leave[x]" @@
+                (info.enter < time);
+                Some {info with rpost; leave = time}))
 
   module Span = struct
     type t = {
@@ -83,9 +84,9 @@ module Test_algo(Gl : Graph_for_algo) = struct
           | Some cs when Set.mem cs child ->
             assert_failure "Child was already adopted"
           | Some cs -> Some (Set.add cs child));
-      iparents = Map.change t.iparents child @@ function
-        | None -> Some parent
-        | Some parent -> assert_failure "Child has more than one parent";
+      iparents = Map.change t.iparents child ~f:(function
+          | None -> Some parent
+          | Some parent -> assert_failure "Child has more than one parent")
     }
 
     let children t parent = match Map.find t.children parent with
@@ -237,7 +238,7 @@ module Test_algo(Gl : Graph_for_algo) = struct
           (exp_equiv x y) (our_equiv x y))
 
 
-  let doms = List.init 100 ~f:(fun n ->
+  let doms = List.concat @@ List.init 100 ~f:(fun n ->
       let size = 1 + Random.int 200 in
       let gr = random_flowgraph size in
       [
@@ -246,10 +247,36 @@ module Test_algo(Gl : Graph_for_algo) = struct
         sprintf "Scc.%d" n >:: compare_scc gr;
       ])
 
+  let nodes g =
+    Gl.nodes g |> Seq.fold ~init:Gl.Node.Set.empty ~f:Set.add
+
+  let edges g =
+    Gl.edges g |> Seq.fold ~init:Gl.Edge.Set.empty ~f:Set.add
+
+  let equal_sets s1 s2 ctxt =
+    assert_equal ~ctxt ~cmp:Set.equal s1 s2
+
+  let setops = List.concat @@ List.init 100 ~f:(fun n ->
+      let g1 = random_graph () in
+      let g2 = random_graph () in
+      let is elems op check ctxt =
+        let g = op g1 g2 in
+        let ns,n1,n2 = elems g, elems g1, elems g2 in
+        assert_equal ~ctxt ~cmp:Set.equal ns (check n1 n2) in
+      let union = Graphlib.union (module Gl) in
+      let inter = Graphlib.inter (module Gl) in
+      [
+        sprintf "Union.%d.nodes" n >:: is nodes union Set.union;
+        sprintf "Union.%d.edges" n >:: is edges union Set.union;
+        sprintf "Inter.%d.nodes" n >:: is nodes inter Set.inter;
+        sprintf "Inter.%d.edges" n >:: is edges inter Set.inter;
+      ])
+
   let suite name =
     name >::: [
       "Random Graphs" >::: randoms;
-      "Random Flow Graphs" >::: List.concat doms;
+      "Random Flow Graphs" >::: doms;
+      "Random Set ops" >::: setops
     ]
 end
 
@@ -272,7 +299,7 @@ module Construction(Factory : Factory) = struct
      compare function) *)
   module Nodes = G.Node.Set
   module Edges = Set.Make(struct
-      type t = G.Node.t * G.Node.t * G.Node.t with compare
+      type t = G.Node.t * G.Node.t * G.Node.t [@@deriving compare]
       let sexp_of_t = sexp_of_opaque
       let t_of_sexp = opaque_of_sexp
     end)
@@ -373,22 +400,23 @@ module OBSS =
        (Tid)(struct include Tid
        let default = Tid.create () end))
 
+module Intu = Graphlib.Make(Int)(Unit)
 
 let graphs_for_algo : (module Graph_for_algo) list = [
   (module ODIU);
   (module OBIU);
-  (module Graphlib.Int.Unit);
+  (module Intu);
 ]
 
 module Int100 : Factory = struct
   type t = int
   let create () = Random.int 100
   module E = OBIU
-  module G = Graphlib.Int.Unit
+  module G = Intu
 end
 
 module Test_IR = struct
-  module G = Graphlib.Ir
+  module G = Graphs.Ir
 
   let entry = Blk.create ()
   let b1 = Blk.create ()
@@ -509,7 +537,7 @@ module Test_IR = struct
     assert_bool "failed"
       (has (G.Node.(has_edge (create x) (create y) g)))
 
-  let suite = [
+  let suite () = [
     "random insert" >::: insert_randomly;
     "[entry] has no edges" >:: edges 0 (nil ++ entry);
     "[b1] has no edges" >:: edges 0 (nil ++ b1);
@@ -538,12 +566,12 @@ module Test_int100 = Construction(Int100)
 
 
 
-let suite =
+let suite () =
   "Graph" >::: [
     "Algo" >:::
     List.mapi graphs_for_algo ~f:(fun n (module G) ->
         let module Test = Test_algo(G) in
         Test.suite (sprintf "%d" n));
     "Construction" >::: [Test_int100.suite];
-    "IR" >::: Test_IR.suite
+    "IR" >::: Test_IR.suite ()
   ]

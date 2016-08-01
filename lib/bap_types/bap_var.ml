@@ -1,11 +1,14 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_common
 
 module Id = struct
-  type t = Int63.t
-  let id = ref Int63.zero
-
+  include Bap_state.Make(struct
+      type t = Int63.t ref
+      let create () = ref Int63.zero
+    end)
   let create () =
+    let id = !state in
     Int63.incr id;
     !id
 end
@@ -16,7 +19,7 @@ module T = struct
     ind : int;
     typ : typ;
     vir : bool;
-  } with sexp, bin_io,compare
+  } [@@deriving sexp, bin_io, compare]
 
   let hash v = String.hash v.var
   let module_name = Some "Bap.Std.Var"
@@ -35,6 +38,7 @@ let base v = {v with ind = 0}
 let typ  v = v.typ
 let is_physical v = not v.vir
 let is_virtual v = v.vir
+
 
 let create ?(is_virtual=false) ?(fresh=false) name typ =
   let var =

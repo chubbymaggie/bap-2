@@ -1,40 +1,44 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_common
 open Bap_bil
 open Bap_value
+open Bap_visitor
 
-type 'a term with bin_io, compare, sexp
-type program with bin_io, compare, sexp
-type sub with bin_io, compare, sexp
-type arg with bin_io, compare, sexp
-type blk with bin_io, compare, sexp
-type phi with bin_io, compare, sexp
-type def with bin_io, compare, sexp
-type jmp with bin_io, compare, sexp
+type 'a term [@@deriving bin_io, compare, sexp]
+type program [@@deriving bin_io, compare, sexp]
+type nil [@@deriving bin_io, compare, sexp]
+type sub [@@deriving bin_io, compare, sexp]
+type arg [@@deriving bin_io, compare, sexp]
+type blk [@@deriving bin_io, compare, sexp]
+type phi [@@deriving bin_io, compare, sexp]
+type def [@@deriving bin_io, compare, sexp]
+type jmp [@@deriving bin_io, compare, sexp]
 
-type tid with bin_io, compare, sexp
-type call with bin_io, compare, sexp
+type tid [@@deriving bin_io, compare, sexp]
+type call [@@deriving bin_io, compare, sexp]
 
 type label =
   | Direct of tid
   | Indirect of exp
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type jmp_kind =
   | Call of call
   | Goto of label
   | Ret  of label
   | Int  of int * tid
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type intent =
   | In
   | Out
   | Both
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type ('a,'b) cls
 
+val program_t : (nil,program) cls
 val sub_t : (program, sub) cls
 val arg_t : (sub, arg) cls
 val blk_t : (sub, blk) cls
@@ -51,6 +55,8 @@ module Tid : sig
   val from_string_exn : string -> tid
   val (!) : string -> tid
   include Regular with type t := t
+  module Tid_generator : Bap_state.S
+  module Name_resolver : Bap_state.S
 end
 
 module Term : sig
@@ -86,6 +92,93 @@ module Term : sig
   val get_attr : 'a t -> 'b tag -> 'b option
   val del_attr : 'a t -> 'b tag -> 'a t
   val has_attr : 'a t -> 'b tag -> bool
+
+  val origin : tid tag
+  val synthetic : unit tag
+  val live : unit tag
+  val dead : unit tag
+  val visited : unit tag
+  val precondition : exp tag
+  val invariant : exp tag
+  val postcondition : exp tag
+
+
+  class mapper : object
+    inherit exp_mapper
+    method run : program term -> program term
+    method map_term : 't 'p. ('p,'t) cls -> 't term -> 't term
+    method map_sub : sub term -> sub term
+    method map_arg : arg term -> arg term
+    method map_blk : blk term -> blk term
+    method map_phi : phi term -> phi term
+    method map_def : def term -> def term
+    method map_jmp : jmp term -> jmp term
+  end
+
+  class ['a] visitor : object
+    inherit ['a] exp_visitor
+
+    method enter_term : 't 'p . ('p,'t) cls -> 't term -> 'a -> 'a
+    method visit_term : 't 'p . ('p,'t) cls -> 't term -> 'a -> 'a
+    method leave_term : 't 'p . ('p,'t) cls -> 't term -> 'a -> 'a
+
+    method enter_program : program term -> 'a -> 'a
+    method run           : program term -> 'a -> 'a
+    method leave_program : program term -> 'a -> 'a
+
+    method enter_sub : sub term -> 'a -> 'a
+    method visit_sub : sub term -> 'a -> 'a
+    method leave_sub : sub term -> 'a -> 'a
+
+    method enter_blk : blk term -> 'a -> 'a
+    method visit_blk : blk term -> 'a -> 'a
+    method leave_blk : blk term -> 'a -> 'a
+
+    method enter_arg : arg term -> 'a -> 'a
+    method visit_arg : arg term -> 'a -> 'a
+    method leave_arg : arg term -> 'a -> 'a
+
+    method enter_phi : phi term -> 'a -> 'a
+    method visit_phi : phi term -> 'a -> 'a
+    method leave_phi : phi term -> 'a -> 'a
+
+    method enter_def : def term -> 'a -> 'a
+    method visit_def : def term -> 'a -> 'a
+    method leave_def : def term -> 'a -> 'a
+
+    method enter_jmp : jmp term -> 'a -> 'a
+    method visit_jmp : jmp term -> 'a -> 'a
+    method leave_jmp : jmp term -> 'a -> 'a
+  end
+
+  val switch : ('p,'t) cls ->
+    program:(program term -> 'a) ->
+    sub:(sub term -> 'a) ->
+    arg:(arg term -> 'a) ->
+    blk:(blk term -> 'a) ->
+    phi:(phi term -> 'a) ->
+    def:(def term -> 'a) ->
+    jmp:(jmp term -> 'a) -> 't term -> 'a
+
+  val proj : ('p,'t) cls ->
+    ?program:(program term -> 'a option) ->
+    ?sub:(sub term -> 'a option) ->
+    ?arg:(arg term -> 'a option) ->
+    ?blk:(blk term -> 'a option) ->
+    ?phi:(phi term -> 'a option) ->
+    ?def:(def term -> 'a option) ->
+    ?jmp:(jmp term -> 'a option) ->
+    't term -> 'a option
+
+  val cata : ('p,'t) cls -> init:'a ->
+    ?program:(program term -> 'a) ->
+    ?sub:(sub term -> 'a) ->
+    ?arg:(arg term -> 'a) ->
+    ?blk:(blk term -> 'a) ->
+    ?phi:(phi term -> 'a) ->
+    ?def:(def term -> 'a) ->
+    ?jmp:(jmp term -> 'a) ->
+    't term -> 'a
 end
 
 module Ir_program : sig
@@ -103,8 +196,6 @@ module Ir_program : sig
   include Regular with type t := t
 end
 
-
-
 module Ir_sub : sig
   type t = sub term
   val create : ?tid:tid -> ?name:string -> unit -> t
@@ -117,6 +208,17 @@ module Ir_sub : sig
     val add_arg : t -> arg term -> unit
     val result : t -> sub term
   end
+
+  val aliases : string list tag
+  val const : unit tag
+  val pure : unit tag
+  val stub : unit tag
+  val extern : unit tag
+  val leaf : unit tag
+  val malloc : unit tag
+  val noreturn : unit tag
+  val returns_twice : unit tag
+  val nothrow : unit tag
   include Regular with type t := t
 end
 
@@ -151,7 +253,6 @@ module Ir_blk : sig
   val uses_var : t -> var -> bool
   val free_vars : t -> Bap_var.Set.t
   val occurs : t -> after:tid -> tid -> bool
-
 
   module Builder : sig
     type t
@@ -229,6 +330,13 @@ module Ir_arg : sig
   val intent : t -> intent option
   val with_intent : t -> intent -> t
   val with_unknown_intent : t -> t
+
+  val alloc_size : unit tag
+  val format : string tag
+  val warn_unused : unit tag
+  val restricted : unit tag
+  val nonnull : unit tag
+
   include Regular with type t := t
 end
 

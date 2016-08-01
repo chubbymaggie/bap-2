@@ -6,20 +6,10 @@ module Std = struct
   include Bap_image_std
   include Bap_disasm_std
   include Bap_sema.Std
+  module Event = Bap_event
   module Project = Bap_project
+  module Self = Bap_self.Create
+  module Log = Bap_log
   type project = Project.t
-  module Dwarf = Bap_dwarf
-  module Elf = Bap_elf
-  type elf = Elf.t
-  module Signatures = Bap_signatures
-  module Byteweight = Bap_byteweight
-  include Graphlib.Std
-  include Bap_trace_std
+  type event = Event.t = ..
 end
-
-(* load internal plugins *)
-let internal : (module Unit) list = [
-  (module Bap_llvm);
-  (module Bap_llvm_loader);
-  (module Bap_native_loader);
-]

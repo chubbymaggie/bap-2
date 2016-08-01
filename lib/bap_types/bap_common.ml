@@ -4,6 +4,7 @@
     as an internal [Std] module, that should be included most modules,
     internal to the library. *)
 open Core_kernel.Std
+open Regular.Std
 
 (** {2 Basic modules}
     The following modules defines the most basic types, on which the
@@ -11,21 +12,16 @@ open Core_kernel.Std
 *)
 module Bitvector = Bap_bitvector
 module Integer   = Bap_integer
-module Regular   = Bap_regular
-module Opaque    = Bap_opaque
-module Printable = Regular.Printable
 module Trie      = Bap_trie
 
 (** {2 Basic Interfaces}  *)
 module type Integer   = Integer.S
-module type Regular   = Regular.S
-module type Opaque    = Opaque.S
-module type Printable = Regular.Printable
 module type Trie      = Bap_trie_intf.S
+
 
 type endian = Bitvector.endian =
     LittleEndian | BigEndian
-with sexp,bin_io,compare
+  [@@deriving sexp, bin_io, compare]
 
 
 module Size = struct
@@ -37,25 +33,25 @@ module Size = struct
     | `r64
     | `r128
     | `r256
-  ] with bin_io, compare, sexp, variants
+  ] [@@deriving bin_io, compare, sexp, variants]
 
-  type 'a p = 'a constraint 'a = [< all]
-  with bin_io, compare, sexp
+  type 'a p =
+    'a constraint 'a = [< all] [@@deriving bin_io, compare, sexp]
 
   type t = all p
-  with bin_io, compare, sexp
+    [@@deriving bin_io, compare, sexp]
 end
 
 (** size of operand  *)
 type size = Size.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 (** size of address  *)
 type addr_size = [ `r32 | `r64 ] Size.p
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type nat1 = int
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 (** The IR type of a BIL expression *)
 module Type = struct
@@ -64,11 +60,11 @@ module Type = struct
     | Imm of nat1
     (** [Mem (a,t)]memory with a specifed addr_size *)
     | Mem of addr_size * size
-  with bin_io, compare, sexp, variants
+    [@@deriving bin_io, compare, sexp, variants]
 end
 
 type typ = Type.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 
 (** Supported architectures  *)
@@ -76,49 +72,49 @@ module Arch = struct
   type x86 = [
     | `x86
     | `x86_64
-  ] with bin_io, compare, enumerate, sexp
+  ] [@@deriving bin_io, compare, enumerate, sexp]
 
   type arm = [
     | `armv4
     | `armv5
     | `armv6
     | `armv7
-  ] with bin_io, compare, enumerate, sexp
+  ] [@@deriving bin_io, compare, enumerate, sexp]
 
   type armeb = [
     | `armv4eb
     | `armv5eb
     | `armv6eb
     | `armv7eb
-  ] with bin_io, compare, enumerate, sexp
+  ] [@@deriving bin_io, compare, enumerate, sexp]
 
   type thumb = [
     | `thumbv4
     | `thumbv5
     | `thumbv6
     | `thumbv7
-  ] with bin_io, compare, enumerate, sexp
+  ] [@@deriving bin_io, compare, enumerate, sexp]
 
   type thumbeb = [
     | `thumbv4eb
     | `thumbv5eb
     | `thumbv6eb
     | `thumbv7eb
-  ] with bin_io, compare, enumerate, sexp
+  ] [@@deriving bin_io, compare, enumerate, sexp]
 
 
   type aarch64 = [
     | `aarch64
     | `aarch64_be
   ]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type ppc = [
     | `ppc
     | `ppc64
     | `ppc64le
   ]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type mips = [
     | `mips
@@ -126,31 +122,31 @@ module Arch = struct
     | `mips64
     | `mips64el
   ]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type sparc = [
     | `sparc
     | `sparcv9
   ]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type nvptx = [
     | `nvptx
     | `nvptx64
   ]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type hexagon = [`hexagon]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type r600 = [`r600]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type systemz = [`systemz]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type xcore = [`xcore]
-  with bin_io, compare, enumerate, sexp
+    [@@deriving bin_io, compare, enumerate, sexp]
 
   type t = [
     | aarch64
@@ -167,7 +163,7 @@ module Arch = struct
     | systemz
     | x86
     | xcore
-  ] with bin_io, compare, enumerate, sexp, variants
+  ] [@@deriving bin_io, compare, enumerate, sexp, variants]
 end
 
 (** {2 Common type abbreviations}
@@ -175,10 +171,10 @@ end
 *)
 
 type arch = Arch.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type word = Bap_bitvector.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type addr = Bap_bitvector.t
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]

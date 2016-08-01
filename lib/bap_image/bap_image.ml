@@ -1,4 +1,5 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_types.Std
 open Or_error
 
@@ -7,7 +8,7 @@ open Image_internal_std
 open Backend
 
 type 'a m = 'a Or_error.t
-type img = Backend.Img.t with sexp_of
+type img = Backend.Img.t [@@deriving sexp_of]
 type path = string
 
 let backends : Backend.t String.Table.t =
@@ -16,7 +17,7 @@ let backends : Backend.t String.Table.t =
 
 let (+>) = Fn.compose
 
-(* We hide Segment and Symbol module making them not only abstract,
+(* We hide Segment and Symbol types making them not only abstract,
    but even nonconstructable from the outside, so that we
    can enforce several invariants.  In particular, we can enforce
    a strict bijection between segment and memory regions as well
@@ -28,7 +29,7 @@ let (+>) = Fn.compose
 
 module Segment = struct
   module T = struct
-    type t = Segment.t with bin_io, compare, sexp
+    type t = Segment.t [@@deriving bin_io, compare, sexp]
     let hash = Addr.hash +> Location.addr +> Segment.location
     let pp fmt t = Format.fprintf fmt "%s" @@ Segment.name t
     let module_name = Some "Bap.Std.Image.Segment"
@@ -51,7 +52,7 @@ end
 
 module Symbol = struct
   module T = struct
-    type t = Symbol.t with bin_io, compare, sexp
+    type t = Symbol.t [@@deriving bin_io, compare, sexp]
     let hash = Addr.hash +> Location.addr +> fst +> Symbol.locations
     let pp fmt t = Format.fprintf fmt "%s" @@ Symbol.name t
     let module_name = Some "Bap.Std.Image.Symbol"
@@ -61,8 +62,8 @@ module Symbol = struct
   include Regular.Make(T)
 end
 
-type segment = Segment.t with bin_io, compare, sexp
-type symbol = Symbol.t with bin_io, compare, sexp
+type segment = Segment.t [@@deriving bin_io, compare, sexp]
+type symbol = Symbol.t [@@deriving bin_io, compare, sexp]
 
 let segment = Value.Tag.register (module Segment)
     ~name:"segment"
@@ -101,14 +102,14 @@ type t = {
   memory_of_symbol : (symbol -> mem * mem seq) Lazy.t sexp_opaque;
   symbols_of_segment : (segment -> symbol seq) Lazy.t sexp_opaque;
   segment_of_symbol : (symbol -> segment) Lazy.t sexp_opaque;
-} with sexp_of
+} [@@deriving sexp_of]
 
 type result = (t * Error.t list) Or_error.t
 
 let memory_error ?here msg mem =
   Error.create ?here msg
     (Memory.min_addr mem, Memory.max_addr mem)
-    <:sexp_of<(addr*addr)>>
+    [%sexp_of:(addr*addr)]
 
 let (++!) e1 e2 = Error.of_list [e1;e2]
 
@@ -149,7 +150,10 @@ let add_sym memory errs secs syms sym =
 
 let create_symbols memory syms secs =
   List.fold syms ~init:(memory,Table.empty,[])
-    ~f:(fun (memory,symtab,errs) sym -> add_sym memory errs secs symtab sym )
+    ~f:(fun (memory,symtab,errs) sym ->
+        if Symbol.is_function sym
+        then add_sym memory errs secs symtab sym
+        else (memory,symtab,errs))
 
 let validate_no_intersections (s,ss) : Validate.t =
   let open Backend.Segment in
@@ -223,6 +227,8 @@ let create_words secs = {
 let register_backend ~name backend =
   String.Table.add backends ~key:name ~data:backend
 
+let available_backends () = Hashtbl.keys backends
+
 let create_segment_of_symbol_table syms secs =
   let tab = Symbol.Table.create ()
       ~growth_allowed:false
@@ -280,7 +286,7 @@ let of_backend backend data path : result =
   | Some load -> match load data with
     | Some img -> of_img img data path
     | None -> error "create image" (backend,`path path)
-                <:sexp_of<string * [`path of string option]>>
+                [%sexp_of:string * [`path of string option]]
 
 let autoload data path =
   let bs = String.Table.data backends in
@@ -328,41 +334,42 @@ let memory_of_symbol {memory_of_symbol = lazy f} = f
 let symbols_of_segment {symbols_of_segment = lazy f} = f
 let segment_of_symbol {segment_of_symbol = lazy f} = f
 
-TEST_MODULE = struct
+(* let%test_module "image" = *)
+(*   (module struct *)
+(*     let expect ?(print=false) ~errors data_size ss = *)
+(*       let width = 32 in *)
+(*       let segment (addr, off, size) = { *)
+(*         Backend.Segment.name = "test-segment"; *)
+(*         Backend.Segment.perm = R; *)
+(*         Backend.Segment.off; *)
+(*         Backend.Segment.location = { *)
+(*           Location.addr = Addr.of_int ~width addr; *)
+(*           Location.len = size; *)
 
-  let expect ?(print=false) ~errors data_size ss =
-    let width = 32 in
-    let segment (addr, off, size) = {
-      Backend.Segment.name = "test-segment";
-      Backend.Segment.perm = R;
-      Backend.Segment.off;
-      Backend.Segment.location = {
-        Location.addr = Addr.of_int ~width addr;
-        Location.len = size;
+(*         } *)
+(*       } in *)
+(*       let data = Bigstring.create data_size in *)
+(*       let secs = match List.map ss ~f:segment with *)
+(*         | [] -> invalid_arg "empty set of segments" *)
+(*         | (s::ss) -> (s,ss) in *)
+(*       let v = validate_segments data secs in *)
+(*       if print then begin *)
+(*         match Validate.(result v) with *)
+(*         | Ok () -> eprintf "No errors\n" *)
+(*         | Error err -> eprintf "Errors: %s\n" @@ Error.to_string_hum err *)
+(*       end; *)
+(*       let has_errors = Validate.errors v <> [] in *)
+(*       errors = has_errors *)
 
-      }
-    } in
-    let data = Bigstring.create data_size in
-    let secs = match List.map ss ~f:segment with
-      | [] -> invalid_arg "empty set of segments"
-      | (s::ss) -> (s,ss) in
-    let v = validate_segments data secs in
-    if print then begin
-      match Validate.(result v) with
-      | Ok () -> eprintf "No errors\n"
-      | Error err -> eprintf "Errors: %s\n" @@ Error.to_string_hum err
-    end;
-    let has_errors = Validate.errors v <> [] in
-    errors = has_errors
-
-  TEST = expect ~errors:true  0 [0,0,0]
-  TEST = expect ~errors:true  1 [0,0,0]
-  TEST = expect ~errors:false 1 [0,0,1]
-  TEST = expect ~errors:true  8 [0,0,4; 2,4,4]
-  TEST = expect ~errors:true  8 [0,0,4; 4,0,4]
-  TEST = expect ~errors:true  7 [0,0,4; 4,4,4]
-  TEST = expect ~errors:true  8 [0,0,4; 4,1,4]
-  TEST = expect ~errors:true  8 [0,2,4; 4,0,4]
-  TEST = expect ~errors:true  8 [0,1,4; 4,0,4]
-  TEST = expect ~errors:true  8 [0,0,4; 4,1,4]
-end
+(*     let%test "" = expect ~errors:true  0 [0,0,0] *)
+(*     let%test "" = expect ~errors:true  1 [0,0,0] *)
+(*     let%test "" = expect ~errors:false 1 [0,0,1] *)
+(*     let%test "" = expect ~errors:true  8 [0,0,4; 2,4,4] *)
+(*     let%test "" = expect ~errors:true  8 [0,0,4; 4,0,4] *)
+(*     let%test "" = expect ~errors:true  7 [0,0,4; 4,4,4] *)
+(*     let%test "" = expect ~errors:true  8 [0,0,4; 4,1,4] *)
+(*     let%test "" = expect ~errors:true  8 [0,2,4; 4,0,4] *)
+(*     let%test "" = expect ~errors:true  8 [0,1,4; 4,0,4] *)
+(*     let%test "" = expect ~errors:true  8 [0,0,4; 4,1,4] *)
+(*   end *)
+(*   ) *)

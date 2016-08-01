@@ -1,5 +1,6 @@
 open Core_kernel.Std
 open Bap_types.Std
+open Graphlib.Std
 open Bap_image_std
 open Bap_disasm_std
 open Bap_ir
@@ -35,7 +36,8 @@ type linear =
   | Instr of Ir_blk.elt
 
 (* we're very conservative here *)
-let has_side_effect e scope = (object inherit [bool] Bil.visitor
+let has_side_effect e scope = (object
+  inherit [bool] Stmt.visitor
   method! enter_load  ~mem:_ ~addr:_ _e _s _r = true
   method! enter_store ~mem:_ ~addr:_ ~exp:_ _e _s _r = true
   method! enter_var v r = r || Bil.is_assigned v scope
@@ -73,13 +75,14 @@ let optimize =
   |> List.reduce_exn ~f:Fn.compose
   |> Bil.fixpoint
 
-let fall_of_block block =
-  Seq.find_map (Block.dests block) ~f:(function
-      | `Block (b,`Fall) -> Some b
+let fall_of_block cfg block =
+  Seq.find_map (Cfg.Node.outputs block cfg) ~f:(fun e ->
+      match Cfg.Edge.label e with
+      | `Fall -> Some (Cfg.Edge.dst e)
       | _ -> None)
 
-let label_of_fall block =
-  Option.map (fall_of_block block) ~f:(fun blk ->
+let label_of_fall cfg block =
+  Option.map (fall_of_block cfg block) ~f:(fun blk ->
       Label.indirect Bil.(int (Block.addr blk)))
 
 let annotate_insn term insn = Term.set_attr term Disasm.insn insn
@@ -93,9 +96,9 @@ let linear_of_stmt ?addr return insn stmt : linear list =
     `Jmp ~@(Ir_jmp.create_goto ?cond (Label.direct id)) in
   let jump ?cond exp =
     let target = Label.indirect exp in
-    if Insn.is_return insn
+    if Insn.(is return) insn
     then Ir_jmp.create_ret ?cond target
-    else if Insn.is_call insn
+    else if Insn.(is call) insn
     then
       Ir_jmp.create_call ?cond (Call.create ?return ~target ())
     else Ir_jmp.create_goto ?cond target in
@@ -179,7 +182,7 @@ let has_jump_under_condition bil =
   with_return (fun {return} ->
       let enter_control ifs = if ifs = 0 then ifs else return true in
       Bil.fold (object
-        inherit [int] Bil.visitor
+        inherit [int] Stmt.visitor
         method! enter_if ~cond ~yes:_ ~no:_ x = x + 1
         method! leave_if ~cond ~yes:_ ~no:_ x = x - 1
         method! enter_jmp _ ifs    = enter_control ifs
@@ -187,11 +190,11 @@ let has_jump_under_condition bil =
       end) ~init:0 bil |> fun (_ : int) -> false)
 
 let is_conditional_jump jmp =
-  Insn.may_affect_control_flow jmp &&
+  Insn.(may affect_control_flow) jmp &&
   has_jump_under_condition (Insn.bil jmp)
 
-let blk block : blk term list =
-  let fall_label = label_of_fall block in
+let blk cfg block : blk term list =
+  let fall_label = label_of_fall cfg block in
   List.fold (Block.insns block) ~init:([],Ir_blk.Builder.create ())
     ~f:(fun init (mem,insn) ->
         let addr = Memory.min_addr mem in
@@ -199,7 +202,7 @@ let blk block : blk term list =
   fun (bs,b) ->
   let fall =
     let jmp = Block.terminator block in
-    if Insn.is_call jmp && not (is_conditional_jump jmp)
+    if Insn.(is call) jmp && not (is_conditional_jump jmp)
     then None else match fall_label with
       | None -> None
       | Some dst -> Some (`Jmp (Ir_jmp.create_goto dst)) in
@@ -257,17 +260,17 @@ let remove_false_jmps blk =
 
 let unbound _ = true
 
-let lift_sub ?(bound=unbound) entry =
+let lift_sub entry cfg =
   let addrs = Addr.Table.create () in
-  let rec recons acc b =
+  let recons acc b =
     let addr = Block.addr b in
-    if not (Hashtbl.mem addrs addr) && bound addr then
-      let bls = blk b in
-      Option.iter (List.hd bls) ~f:(fun blk ->
-          Hashtbl.add_exn addrs ~key:addr ~data:(Term.tid blk));
-      Seq.fold (Block.succs b) ~init:(acc @ bls) ~f:recons
-    else acc in
-  let blks = recons [] entry in
+    let blks = blk cfg b in
+    Option.iter (List.hd blks) ~f:(fun blk ->
+        Hashtbl.add_exn addrs ~key:addr ~data:(Term.tid blk));
+    acc @ blks in
+  let blocks = Graphlib.reverse_postorder_traverse
+      (module Cfg) ~start:entry cfg in
+  let blks = Seq.fold blocks ~init:[] ~f:recons in
   let n = let n = List.length blks in Option.some_if (n > 0) n in
   let sub = Ir_sub.Builder.create ?blks:n () in
   List.iter blks ~f:(fun blk ->
@@ -280,12 +283,9 @@ let lift_sub ?(bound=unbound) entry =
 let program symtab =
   let b = Ir_program.Builder.create () in
   let addrs = Addr.Table.create () in
-  Seq.iter (Symtab.to_sequence symtab) ~f:(fun fn ->
-      let addr = Block.addr (Symtab.entry_of_fn fn) in
-      let in_fun = unstage (Symtab.create_bound symtab fn) in
-      let entry = Symtab.entry_of_fn fn in
-      let sub = lift_sub ~bound:in_fun entry in
-      let name = Symtab.name_of_fn fn in
+  Seq.iter (Symtab.to_sequence symtab) ~f:(fun (name,entry,cfg) ->
+      let addr = Block.addr entry in
+      let sub = lift_sub entry cfg in
       Ir_program.Builder.add_sub b (Ir_sub.with_name sub name);
       Tid.set_name (Term.tid sub) name;
       Hashtbl.add_exn addrs ~key:addr ~data:(Term.tid sub));

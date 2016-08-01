@@ -8,7 +8,7 @@ open Core_kernel.Std
     that retrieves imm value of operand as an int (and thus is a
     "noalloc" function). Values that don't fit, are represented as
     [Int.max_val], and [Int.min_val]. (So this functions actually
-    narrows abit a range of values representable by int type - min_val and
+    narrows a bit a range of values representable by int type - min_val and
     max_val are no longer included, since they're used as sentinels).
 
     All this functions are unsafe. They can cause segfaults or worse,
@@ -33,14 +33,14 @@ type pred =
   | May_affect_control_flow
   | May_store
   | May_load
-with compare, sexp
+[@@deriving compare, sexp]
 
 type op =
   | Reg
   | Imm
   | Fmm
   | Insn
-with compare, sexp
+[@@deriving compare, sexp]
 
 
 
@@ -51,6 +51,11 @@ external create
   -> debug_level:int
   -> t
   = "bap_disasm_create_stub" "noalloc"
+
+external backends_size : unit -> int =
+  "bap_disasm_backends_size_stub" "noalloc"
+
+external backend_name : int -> string = "bap_disasm_backend_name_stub"
 
 external delete : t -> unit = "bap_disasm_delete_stub"  "noalloc"
 external set_memory : t -> int64 -> Bigstring.t -> off:int -> len:int -> unit

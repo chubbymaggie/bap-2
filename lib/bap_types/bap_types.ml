@@ -6,6 +6,7 @@
 
 
 open Core_kernel.Std
+open Regular.Std
 open Bap_common
 
 (** This module is included into [Bap.Std], you need to open it
@@ -13,20 +14,14 @@ open Bap_common
 module Std = struct
   (** A definition for a regular type, and a handy module,
       that can create regular types out of thin air. *)
-  module Regular = Regular
   module Integer = Integer
-  module Printable = Printable
-  module Opaque = Opaque
+  module State = Bap_state
   module Trie = struct
     include Bap_trie_intf
     include Bap_trie
   end
 
-  include Bap_data_intf
-  module type Opaque = Opaque
-  module type Regular = Regular
   module type Integer = Integer
-  module type Printable = Printable
   module type Trie = Trie
 
   module Monad = struct
@@ -34,14 +29,6 @@ module Std = struct
     include Bap_monad_types
   end
 
-  module Data = struct
-    include Bap_data_intf
-    include Bap_data_types
-    include Bap_data
-    module type S = Data
-    module Write = Bap_data_write
-    module Read = Bap_data_read
-  end
 
   (** Target architecture. *)
   module Arch = struct
@@ -69,9 +56,8 @@ module Std = struct
     include Bap_size
   end
 
-
   module Bil = struct
-    type t = Bap_bil.bil with bin_io, compare, sexp
+    type t = Bap_bil.bil [@@deriving bin_io, compare, sexp]
     include (Bap_stmt.Stmts_pp : Printable with type t := t)
     include (Bap_stmt.Stmts_data : Data with type t := t)
     module Types = struct
@@ -111,7 +97,7 @@ module Std = struct
   module Type_error = Bap_type_error
   module Context = Bap_context
 
-  type type_error = Type_error.t with bin_io, compare, sexp
+  type type_error = Type_error.t [@@deriving bin_io, compare, sexp]
 
   class ['a] bili = ['a] Bili.t
   class ['a] expi = ['a] Expi.t
@@ -119,7 +105,7 @@ module Std = struct
 
   (** [Regular] interface for BIL expressions *)
   module Exp = struct
-    type t = Bap_bil.exp with bin_io, compare, sexp
+    type t = Bap_bil.exp [@@deriving bin_io, compare, sexp]
     include Bap_helpers.Exp
     include (Bap_exp : Regular with type t := t)
     let pp_adt = Bap_bil_adt.pp_exp
@@ -127,7 +113,7 @@ module Std = struct
 
   (** [Regular] interface for BIL statements  *)
   module Stmt = struct
-    type t = Bap_bil.stmt with bin_io, compare, sexp
+    type t = Bap_bil.stmt [@@deriving bin_io, compare, sexp]
     include Bap_helpers.Stmt
     include (Bap_stmt : Regular with type t := t)
     let pp_adt = Bap_bil_adt.pp_stmt
@@ -164,7 +150,7 @@ module Std = struct
       Sorry, no maps and tables for this type.
   *)
   type endian = Bap_common.endian = LittleEndian | BigEndian
-  with sexp,bin_io,compare
+    [@@deriving sexp, bin_io, compare]
 
   (** {2 Type abbreviations}
       In this section there is a type abbreviation for all
@@ -175,48 +161,38 @@ module Std = struct
       acceptable sizes, e.g., [type mmx = [`r128 | `r256] poly_size]
   *)
   type 'a size_p = 'a Size.p
-  with bin_io, compare, sexp
+    [@@deriving bin_io, compare, sexp]
 
   (** [addr_size] is a subset of sizes that contains only two
       instances [`r32] and [`r64]  *)
-  type nonrec addr_size = addr_size
-  with bin_io, compare, sexp
+  type nonrec addr_size = Bap_common.addr_size
+    [@@deriving bin_io, compare, sexp]
 
-  type addr  = Addr.t      with bin_io, compare, sexp
-  type arch  = Arch.t      with bin_io, compare, sexp
-  type bil   = Bap_bil.bil with bin_io, compare, sexp
-  type binop = Bil.binop   with bin_io, compare, sexp
-  type cast  = Bil.cast    with bin_io, compare, sexp
-  type exp   = Exp.t       with bin_io, compare, sexp
-  type size  = Size.t      with bin_io, compare, sexp
-  type stmt  = Stmt.t      with bin_io, compare, sexp
-  type typ   = Type.t      with bin_io, compare, sexp
-  type unop  = Bil.unop    with bin_io, compare, sexp
-  type var   = Var.t       with bin_io, compare, sexp
-  type word  = Word.t      with bin_io, compare, sexp
-  type nat1  = int         with bin_io, compare, sexp
-  type value = Value.t     with bin_io, compare, sexp
-  type dict  = Value.dict  with bin_io, compare, sexp
+  type addr  = Addr.t      [@@deriving bin_io, compare, sexp]
+  type arch  = Arch.t      [@@deriving bin_io, compare, sexp]
+  type bil   = Bap_bil.bil [@@deriving bin_io, compare, sexp]
+  type binop = Bil.binop   [@@deriving bin_io, compare, sexp]
+  type cast  = Bil.cast    [@@deriving bin_io, compare, sexp]
+  type exp   = Exp.t       [@@deriving bin_io, compare, sexp]
+  type size  = Size.t      [@@deriving bin_io, compare, sexp]
+  type stmt  = Stmt.t      [@@deriving bin_io, compare, sexp]
+  type typ   = Type.t      [@@deriving bin_io, compare, sexp]
+  type unop  = Bil.unop    [@@deriving bin_io, compare, sexp]
+  type var   = Var.t       [@@deriving bin_io, compare, sexp]
+  type word  = Word.t      [@@deriving bin_io, compare, sexp]
+  type nat1  = int         [@@deriving bin_io, compare, sexp]
+  type value = Value.t     [@@deriving bin_io, compare, sexp]
+  type dict  = Value.dict  [@@deriving bin_io, compare, sexp]
   type 'a tag = 'a Value.tag
 
-  class ['a] bil_visitor = ['a] Bap_visitor.visitor
-
-
-  (** A more concise name for the Core's Sequence module.
-      Also, it extends sequence with some useful functions.  *)
-  module Seq = struct
-    include Sequence
-    include Bap_seq
-  end
-  include Seq.Export
-
+  class ['a] exp_visitor = ['a] Bap_visitor.bil_visitor
+  class ['a] bil_visitor = ['a] Bap_visitor.bil_visitor
 
   module Vector = Bap_vector
 
-  type 'a vector = 'a Vector.t with bin_io, compare, sexp
+  type 'a vector = 'a Vector.t [@@deriving bin_io, compare, sexp]
 
   (** {2 Common type abbreviations}  *)
-  type 'a seq = 'a Seq.seq with sexp
   type bigstring = Bigstring.t
 
   include Bap_int_conversions
@@ -224,4 +200,12 @@ module Std = struct
 
   (** Library configuration, version, and other constants  *)
   module Config = Bap_config
+
+  module Seq = Seq
+  type 'a seq = 'a Seq.t [@@deriving bin_io, compare, sexp]
+
+  module Callgraph = Bap_ir_callgraph
+
+
+
 end

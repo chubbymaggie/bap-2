@@ -1,0 +1,24 @@
+########### Bap_ida Library #############################
+
+Flag ida
+  Description: Build IDA intergration library
+  Default: false
+
+Library bap_ida
+  Path:             lib/bap_ida
+  FindlibName:      bap-ida
+  CompiledObject:   best
+  Build$:           flag(everything) || flag(ida)
+  Modules:          Bap_ida
+  BuildDepends:     fileutils, re.posix
+  XMETADescription: make calls into IDA
+
+Library bap_ida_plugin
+  Build$:           flag(everything) || flag(ida)
+  Path:             plugins/ida
+  FindlibName:      bap-plugin-ida
+  CompiledObject:   best
+  BuildDepends:     bap, bap-ida, cmdliner
+  Modules:          Ida_main
+  InternalModules:  Bap_ida_config, Bap_ida_service
+  XMETADescription: use ida to provide rooter, symbolizer and reconstructor

@@ -1,10 +1,10 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_common
 open Bap_bil
 
 module Value = Bap_value
 module Dict = Value.Dict
-module Seq = Sequence
 module Vec = Bap_vector
 module Var = Bap_var
 
@@ -14,6 +14,7 @@ module Bil = struct
 end
 
 module Exp = struct
+  type t = exp
   include Bap_exp
   include Exp
   include Bap_helpers.Exp
@@ -25,17 +26,49 @@ module Stmt = struct
   include Bap_helpers.Stmt
 end
 
-type dict = Dict.t with bin_io, compare, sexp
+type dict = Dict.t [@@deriving bin_io, compare, sexp]
 type 'a vector = 'a Vec.t
 
 module Tid = struct
   exception Overrun
-  type t = Int63.t
+  type t = Int63.t [@@deriving bin_io, compare, sexp]
 
-  let names = Int63.Table.create ()
+  module Tid_generator = Bap_state.Make(struct
+      type t = Int63.t ref
+      let create () = ref (Int63.zero)
+    end)
+
+  let create =
+    fun () ->
+      let last_tid = !Tid_generator.state in
+      Int63.incr last_tid;
+      if last_tid.contents = Int63.zero
+      then raise Overrun;
+      last_tid.contents
+
+  let nil = Int63.zero
+  module Tid = Regular.Make(struct
+      type nonrec t = Int63.t [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Tid"
+      let version = "0.1"
+
+      let hash = Int63.hash
+
+      let pp ppf tid =
+        Format.fprintf ppf "%08Lx" (Int63.to_int64 tid)
+
+      let to_string tid = Format.asprintf "%a" pp tid
+    end)
+
+  module Name_resolver = Bap_state.Make(struct
+      type t = string Tid.Table.t
+      let create () = Tid.Table.create ()
+    end)
+
+  let names = Name_resolver.state
 
   let rev_lookup name =
-    Hashtbl.to_alist names |> List.find_map ~f:(fun (tid,x) ->
+    Hashtbl.to_alist !names |> List.find_map ~f:(fun (tid,x) ->
         Option.some_if (x = name) tid) |> function
     | None -> invalid_argf "unbound name: %s" name ()
     | Some name -> name
@@ -48,94 +81,78 @@ module Tid = struct
   let from_string str = Or_error.try_with (fun () ->
       from_string_exn str)
 
-  let (!) = from_string_exn
-
-  let create =
-    let tid = ref Int63.zero in
-    fun () ->
-      Int63.incr tid;
-      if tid.contents = Int63.zero
-      then raise Overrun;
-      tid.contents
-  let nil = Int63.zero
-  include Regular.Make(struct
-      type nonrec t = Int63.t with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Tid"
-      let version = "0.1"
-
-      let hash = Int63.hash
-
-      let pp ppf tid =
-        Format.fprintf ppf "%08Lx" (Int63.to_int64 tid)
-
-      let to_string tid = Format.asprintf "%a" pp tid
-    end)
-
   let set_name tid name =
-    Hashtbl.set names ~key:tid ~data:name
+    Hashtbl.set !names ~key:tid ~data:name
 
-  let name tid = match Hashtbl.find names tid with
-    | None -> Format.asprintf "%%%a" pp tid
+  let name tid = match Hashtbl.find !names tid with
+    | None -> Format.asprintf "%%%a" Tid.pp tid
     | Some name -> sprintf "@%s" name
+
+  module State = struct
+    let set_name_resolver resolver = names := resolver
+  end
+
+  let (!) = from_string_exn
+  include Tid
 end
 
-type tid = Tid.t with bin_io, compare, sexp
+type tid = Tid.t [@@deriving bin_io, compare, sexp]
 
 type 'a term = {
   tid : tid;
   self : 'a;
   dict : dict;
-} with bin_io, compare, fields, sexp
+} [@@deriving bin_io, compare, fields, sexp]
 
 type label =
   | Direct of tid
   | Indirect of exp
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type call = {target : label; return : label option}
-with bin_io, compare, fields, sexp
+  [@@deriving bin_io, compare, fields, sexp]
 
 type jmp_kind =
   | Call of call
   | Goto of label
   | Ret  of label
   | Int  of int * tid
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 
-type intent = In | Out | Both with bin_io, compare, sexp
+type intent = In | Out | Both [@@deriving bin_io, compare, sexp]
 
-type jmp = (exp * jmp_kind) with bin_io, compare, sexp
-type def = (var * exp) with bin_io, compare, sexp
-type phi = (var * exp Tid.Map.t) with bin_io, compare, sexp
+type jmp = (exp * jmp_kind) [@@deriving bin_io, compare, sexp]
+type def = (var * exp) [@@deriving bin_io, compare, sexp]
+type phi = (var * exp Tid.Map.t) [@@deriving bin_io, compare, sexp]
 
 type blk = {
   phis : phi term array;
   defs : def term array;
   jmps : jmp term array;
-} with bin_io, compare, fields, sexp
+} [@@deriving bin_io, compare, fields, sexp]
 
 type arg = var * exp * intent option
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 type sub = {
   name : string;
   blks : blk term array;
   args : arg term array;
-} with bin_io, compare, fields, sexp
+} [@@deriving bin_io, compare, fields, sexp]
 
 
 type path = int array
-with bin_io, compare, sexp
+  [@@deriving bin_io, compare, sexp]
 
 
 type program = {
   subs  : sub term array;
   paths : path Tid.Table.t;
-} with bin_io, fields, sexp
+} [@@deriving bin_io, fields, sexp]
 
 let compare_program x y =
-  let compare x y = <:compare<sub term array>> x y in
+  let compare x y = [%compare:sub term array] x y in
   compare x.subs y.subs
 
 
@@ -201,7 +218,10 @@ module Leaf = struct
   let with_rhs def rhs = {def with self = (fst def.self, rhs)}
 end
 
+type nil [@@deriving bin_io, compare, sexp]
+
 type _ typ =
+  | Nil : nil typ
   | Top : program typ
   | Sub : sub typ
   | Arg : arg typ
@@ -219,6 +239,7 @@ type ('a,'b) cls = {
 }
 
 let string_of_typ : type a . a typ -> string = function
+  | Nil -> "nil"
   | Top -> "top"
   | Sub -> "sub"
   | Arg -> "arg"
@@ -236,8 +257,22 @@ let cls typ par nil field = {
   get = Field.get field;
 }
 
+
+
 let hash_of_term t = Tid.hash (tid t)
 let make_term tid self : 'a term = {tid; self; dict = Dict.empty}
+
+let nil_top = make_term Tid.nil {
+    subs = [| |] ; paths = Tid.Table.create ();
+  }
+
+let program_t = {
+  par = Nil;
+  typ = Top;
+  nil = nil_top;
+  set = (fun _ _ -> assert false);
+  get = (fun _ -> assert false);
+}
 
 let nil_def : def term =
   Leaf.make Tid.nil undefined_var undefined_exp
@@ -264,6 +299,307 @@ let blk_t : (sub,blk) cls = cls Blk Sub nil_blk Fields_of_sub.blks
 let arg_t : (sub,arg) cls = cls Arg Sub nil_arg Fields_of_sub.args
 let sub_t : (program, sub) cls =
   cls Sub Top nil_sub Fields_of_program.subs
+
+let term_pp pp_self ppf t =
+  let open Format in
+  let attrs = Dict.data t.dict in
+  Seq.iter attrs ~f:(fun attr ->
+      pp_open_tag ppf (asprintf "%a" pp_attr attr));
+  fprintf ppf "@[%a: %a@]@." Tid.pp t.tid pp_self t.self;
+  Seq.iter attrs ~f:(fun _ -> pp_close_tag ppf ())
+
+
+
+
+module Label = struct
+  type t = label
+  let direct x = Direct x
+  let indirect x = Indirect x
+  let create () = direct (Tid.create ())
+  let change ?(direct=ident) ?(indirect=ident) label =
+    match label with
+    | Direct x -> Direct (direct x)
+    | Indirect x -> Indirect (indirect x)
+
+  include Regular.Make(struct
+      type t = label [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Label"
+      let version = "0.1"
+
+      let hash = Hashtbl.hash
+      let pp ppf = function
+        | Indirect exp -> Bap_exp.pp ppf exp
+        | Direct tid -> Format.fprintf ppf "%s" @@ Tid.name tid
+    end)
+end
+
+module Call = struct
+  type t = call
+  let create ?return ~target ()  = {target; return}
+  let return t = t.return
+  let target t = t.target
+  let with_return t return = { t with return = Some return }
+  let with_target t target = { t with target }
+  let with_noreturn t = {t with return = None}
+
+  include Regular.Make(struct
+      type t = call [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Call"
+      let version = "0.1"
+
+
+      let pp_return ppf lab = match lab with
+        | Some label ->
+          Format.fprintf ppf "with return %a" Label.pp label
+        | None -> Format.fprintf ppf "with noreturn"
+
+      let pp ppf c =
+        Format.fprintf ppf "@[call %a %a@]"
+          Label.pp c.target pp_return c.return
+
+      let hash = Hashtbl.hash
+    end)
+end
+
+module Ir_arg = struct
+  type t = arg term
+  let create ?(tid=Tid.create()) ?intent var exp : t =
+    make_term tid (var,exp,intent)
+
+  let lhs    {self=(r,_,_)} = r
+  let rhs    {self=(_,r,_)} = r
+  let intent {self=(_,_,r)} = r
+  let map3 (x,y,z) ~f = (x,y, f z)
+  let with_intent (t : t) intent : t = {
+    t with self = map3 t.self ~f:(fun _ -> Some intent)
+  }
+  let with_unknown_intent t : t = {
+    t with self = map3 t.self ~f:(fun _ -> None)
+  }
+  let name arg = Var.name (lhs arg)
+
+
+  let warn_unused = Bap_value.Tag.register (module Unit)
+      ~name:"warn-unused"
+      ~uuid:"7aa17c89-cc9b-4ed2-8700-620cb9e09491"
+
+  let format = Bap_value.Tag.register (module String)
+      ~name:"format"
+      ~uuid:"d864c411-73eb-48b2-a7e9-33b51fa540c9"
+
+  let alloc_size = Bap_value.Tag.register (module Unit)
+      ~name:"alloc-size"
+      ~uuid:"b29905b3-4fb5-486e-8064-9b63cadc6174"
+
+  let restricted = Bap_value.Tag.register (module Unit)
+      ~name:"restricted"
+      ~uuid:"5ee30262-aed9-4aa8-a8e3-34a061104420"
+
+  let nonnull = Bap_value.Tag.register (module Unit)
+      ~name:"nonnull"
+      ~uuid:"3c0a6181-9a9c-4cf4-aa37-8ceebd773952"
+
+
+  include Regular.Make(struct
+      type t = arg term [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Arg"
+      let version = "0.1"
+
+      let hash = hash_of_term
+
+      let string_of_intent = function
+        | Some In -> "in "
+        | Some Out -> "out "
+        | Some Both -> "in out "
+        | None -> ""
+
+      let pp_self ppf (var,exp,intent) =
+        Format.fprintf ppf "%s :: %s%a = %a"
+          (Var.name var)
+          (string_of_intent intent)
+          Bap_type.pp (Var.typ var)
+          Bap_exp.pp exp
+
+      let pp = term_pp pp_self
+    end)
+end
+
+
+module Ir_def = struct
+  type t = def term
+  include Leaf
+
+  let map_exp def ~f : def term =
+    with_rhs def (f (rhs def))
+
+  let substitute def x y = map_exp def ~f:(Exp.substitute x y)
+
+  let free_vars def = Exp.free_vars (rhs def)
+
+
+  include Regular.Make(struct
+      type t = def term [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Def"
+      let version = "0.1"
+
+      let hash = hash_of_term
+
+      let pp_self ppf (lhs,rhs) =
+        Format.fprintf ppf "%a := %a" Var.pp lhs Bap_exp.pp rhs
+
+      let pp = term_pp pp_self
+    end)
+end
+
+module Ir_phi = struct
+  type t = phi term
+  include Leaf
+
+  let of_list ?tid var bs : phi term =
+    create ?tid var (Tid.Map.of_alist_reduce bs ~f:(fun _ x -> x))
+
+  let create ?tid var src exp : phi term = of_list var [src,exp]
+
+  let values (phi : phi term) : (tid * exp) Seq.t =
+    Map.to_sequence (rhs phi)
+
+  let update (phi : phi term) tid exp : phi term =
+    with_rhs phi (Map.add (rhs phi) ~key:tid ~data:exp)
+
+  let remove phi tid : phi term =
+    with_rhs phi (Map.remove (rhs phi) tid)
+
+  let select phi tid : exp option =
+    Map.find (rhs phi) tid
+
+  let select_or_unknown phi tid = match select phi tid with
+    | Some thing -> thing
+    | None ->
+      let name = Format.asprintf "no path from %a" Tid.pp tid in
+      Bap_exp.Exp.unknown name (Var.typ (lhs phi))
+
+  let map_exp phi ~f : phi term =
+    with_rhs phi (Map.map (rhs phi) ~f)
+
+  let substitute phi x y = map_exp phi ~f:(Exp.substitute x y)
+
+  let free_vars phi =
+    values phi |> Seq.fold ~init:Bap_var.Set.empty ~f:(fun vars (_,e) ->
+        Set.union vars (Exp.free_vars e))
+
+  include Regular.Make(struct
+      type t = phi term [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Phi"
+      let version = "0.1"
+
+      let hash = hash_of_term
+
+      let pp_self ppf (lhs,rhs) =
+        Format.fprintf ppf "%a := phi(%s)"
+          Var.pp lhs
+          (String.concat ~sep:", " @@
+           List.map ~f:(fun (id,exp) ->
+               Format.asprintf "[%a, %%%a]" Bap_exp.pp exp Tid.pp id)
+             (Map.to_alist rhs))
+      let pp = term_pp pp_self
+    end)
+end
+
+module Ir_jmp = struct
+  type t = jmp term
+  include Leaf
+
+  let create_call ?tid ?(cond=always) call =
+    create ?tid cond (Call call)
+
+  let create_goto ?tid ?(cond=always) dest =
+    create ?tid cond (Goto dest)
+
+  let create_ret  ?tid ?(cond=always) dest =
+    create ?tid cond (Ret  dest)
+
+  let create_int  ?tid ?(cond=always) n t  =
+    create ?tid cond (Int (n,t))
+
+  let create      ?tid ?(cond=always) kind =
+    create ?tid cond kind
+
+  let kind = rhs
+  let cond = lhs
+  let with_cond = with_lhs
+  let with_kind = with_rhs
+
+  let exps (jmp : jmp term) : exp Sequence.t =
+    let open Sequence.Generator in
+    let label label = match label with
+      | Indirect exp -> yield exp
+      | Direct _ -> return () in
+    let call call =
+      Option.value_map ~default:(return ())
+        (Call.return call) ~f:label >>= fun () ->
+      label (Call.target call) in
+    let r = match kind jmp with
+      | Call t -> call  t
+      | Goto t | Ret  t -> label t
+      | _ -> return () in
+    run (r >>= fun () -> yield (cond jmp))
+
+  let map_exp (jmp : jmp term) ~f : jmp term =
+    let map_label label = match label with
+      | Indirect exp -> Label.indirect (f exp)
+      | Direct _ -> label in
+    let map_call call : call =
+      let return = Option.map (Call.return call) ~f:map_label in
+      let target = map_label (Call.target call) in
+      Call.create ?return ~target () in
+    let jmp = with_cond jmp (f (cond jmp)) in
+    let kind = match kind jmp with
+      | Call t -> Call (map_call  t)
+      | Goto t -> Goto (map_label t)
+      | Ret  t -> Ret  (map_label t)
+      | Int (_,_) as kind -> kind in
+    with_kind jmp kind
+
+  let substitute jmp x y = map_exp jmp ~f:(Exp.substitute x y)
+
+  let free_vars jmp =
+    exps jmp |> Seq.fold ~init:Bap_var.Set.empty ~f:(fun vars e ->
+        Set.union vars (Exp.free_vars e))
+
+  let eval jmp bili =
+    let eval_label = function
+      | Indirect dst -> bili#eval_jmp (Stmt.jmp dst)
+      | Direct _ -> assert false in
+    match kind jmp with
+    | Goto t -> eval_label t
+    | _ -> assert false
+
+
+  include Regular.Make(struct
+      type t = jmp term [@@deriving bin_io, compare, sexp]
+      let module_name = Some "Bap.Std.Jmp"
+      let version = "0.1"
+
+      let hash = hash_of_term
+
+      let pp_dst ppf = function
+        | Goto dst -> Format.fprintf ppf "goto %a" Label.pp dst
+        | Call sub -> Call.pp ppf sub
+        | Ret  dst -> Format.fprintf ppf "return %a" Label.pp dst
+        | Int (n,t) ->
+          Format.fprintf ppf "interrupt 0x%X return %%%a" n Tid.pp t
+
+      let pp_cond ppf cond =
+        if Exp.(cond <> always) then
+          Format.fprintf ppf "when %a " Bap_exp.pp cond
+
+      let pp_self ppf (lhs,rhs) =
+        Format.fprintf ppf "%a%a" pp_cond lhs pp_dst rhs
+
+      let pp = term_pp pp_self
+    end)
+end
+
 
 module Term = struct
   type 'a t = 'a term
@@ -380,7 +716,41 @@ module Term = struct
   let get_attr t = Dict.find t.dict
   let del_attr t tag = {t with dict = Dict.remove t.dict tag}
   let has_attr t tag = get_attr t tag <> None
+
   let length t p = Array.length (t.get p.self)
+
+  let origin = Bap_value.Tag.register (module Tid)
+      ~name:"origin"
+      ~uuid:"fa804594-d2fc-4865-824a-3ad481963f54"
+
+  let synthetic = Bap_value.Tag.register (module Unit)
+      ~name:"synthetic"
+      ~uuid:"a83b26b5-902e-4aaf-bfa1-503e3ced0b1a"
+
+
+  let live = Bap_value.Tag.register (module Unit)
+      ~name:"live"
+      ~uuid:"4d3871ab-9481-4d41-97a3-cd3136acfa90"
+
+  let dead = Bap_value.Tag.register (module Unit)
+      ~name:"dead"
+      ~uuid:"6009fb21-2a6c-4511-9aa4-92b2894debc7"
+
+  let visited = Bap_value.Tag.register (module Unit)
+      ~name:"visited"
+      ~uuid:"0e162aa3-153f-44a3-88e7-6e42d876e760"
+
+  let precondition = Bap_value.Tag.register (module Exp)
+      ~name:"precondition"
+      ~uuid:"f08c88e1-56f5-4148-822a-ac2dff34bda5"
+
+  let invariant = Bap_value.Tag.register (module Exp)
+      ~name:"invariant"
+      ~uuid:"743d712b-7ee4-46da-b3b7-98d3ca5e618b"
+
+  let postcondition = Bap_value.Tag.register (module Exp)
+      ~name:"postcondition"
+      ~uuid:"f248e4c1-9efc-4c70-a864-e34706e2082b"
 
   let change t p tid f =
     Array.findi (t.get p.self) ~f:(fun _ x -> x.tid = tid) |> function
@@ -392,280 +762,212 @@ module Term = struct
             if i = n then c else x) in
         {p with self = t.set p.self xs}
 
-  let pp pp_self ppf t =
-    let open Format in
-    let attrs = Dict.data t.dict in
-    Seq.iter attrs ~f:(fun attr ->
-        pp_open_tag ppf (asprintf "%a" pp_attr attr));
-    Format.fprintf ppf "@[%a: %a@]@." Tid.pp t.tid pp_self t.self;
-    Seq.iter attrs ~f:(fun _ -> pp_close_tag ppf ());
+  let pp = term_pp
+
+  type ('a,'b) cata = 'a term -> 'b
+
+  let this x t = x
+
+  let cata (type t) (cls : (_,t) cls)
+      ~init:default
+      ?(program : (program,'a) cata = this default)
+      ?(sub : (sub,'a) cata = this default)
+      ?(arg : (arg,'a) cata = this default)
+      ?(blk : (blk,'a) cata = this default)
+      ?(phi : (phi,'a) cata = this default)
+      ?(def : (def,'a) cata = this default)
+      ?(jmp : (jmp,'a) cata = this default)
+      (t : t term) : 'a = match cls.typ with
+    | Nil -> assert false
+    | Top -> program t
+    | Sub -> sub t
+    | Arg -> arg t
+    | Blk -> blk t
+    | Phi -> phi t
+    | Def -> def t
+    | Jmp -> jmp t
+
+  let match_failure _ = raise (Match_failure ("",0,0))
+  type ('a,'b) case = 'a -> 'b
+
+  let switch (type t)
+      (cls : (_,t) cls)
+      ~(program : (program,'a) cata)
+      ~(sub : (sub,'a) cata)
+      ~(arg : (arg,'a) cata)
+      ~(blk : (blk,'a) cata)
+      ~(phi : (phi,'a) cata)
+      ~(def : (def,'a) cata)
+      ~(jmp : (jmp,'a) cata)
+      (t : t term) : 'a = match cls.typ with
+    | Nil -> assert false
+    | Top -> program t
+    | Sub -> sub t
+    | Arg -> arg t
+    | Blk -> blk t
+    | Phi -> phi t
+    | Def -> def t
+    | Jmp -> jmp t
+
+
+  type ('a,'b) proj = 'a term -> 'b option
+
+  let nothing _ = None
+
+  let proj cls ?program ?sub ?arg ?blk ?phi ?def ?jmp t =
+    cata ~init:None ?program ?sub ?arg ?blk ?phi ?def ?jmp cls t
+
+  type 'a map = 'a term -> 'a term
+
+  let map_term (type t) (cls : (_,t) cls)
+      ?(program : program map = ident)
+      ?(sub : sub map = ident)
+      ?(arg : arg map = ident)
+      ?(blk : blk map = ident)
+      ?(phi : phi map = ident)
+      ?(def : def map = ident)
+      ?(jmp : jmp map = ident)
+      (t : t term) : t term = match cls.typ with
+    | Nil -> assert false
+    | Top -> program t
+    | Sub -> sub t
+    | Arg -> arg t
+    | Blk -> blk t
+    | Phi -> phi t
+    | Def -> def t
+    | Jmp -> jmp t
+
+
+  let map1 (x,y,z) ~f = (f x,y,z)
+  let map2 (x,y,z) ~f = (x,f y,z)
+
+  class mapper = object(self)
+    inherit Bil.exp_mapper
+    method map_term : 't 'p. ('p,'t) cls -> 't term -> 't term =
+      fun cls t -> map_term cls t
+          ~program:self#run
+          ~sub:self#map_sub
+          ~arg:self#map_arg
+          ~blk:self#map_blk
+          ~phi:self#map_phi
+          ~def:self#map_def
+          ~jmp:self#map_jmp
+
+    method run p = map sub_t ~f:(fun t -> self#map_term sub_t t) p
+    method map_sub sub = map arg_t ~f:(self#map_term arg_t) sub |>
+                         map blk_t ~f:(self#map_term blk_t)
+    method map_blk blk = map phi_t ~f:(self#map_term phi_t) blk |>
+                         map def_t ~f:(self#map_term def_t) |>
+                         map jmp_t ~f:(self#map_term jmp_t)
+
+
+
+    method map_arg arg = {
+      arg with
+      self = map1 ~f:self#map_sym arg.self |>
+             map2 ~f:self#map_exp
+    }
+
+    method map_phi phi =
+      let phi = Ir_phi.(with_lhs phi (self#map_sym (lhs phi))) in
+      Ir_phi.map_exp phi ~f:self#map_exp
+
+    method map_def def =
+      let def = Ir_def.(with_lhs def (self#map_sym (lhs def))) in
+      Ir_def.map_exp def ~f:self#map_exp
+
+    method map_jmp jmp = Ir_jmp.map_exp jmp ~f:self#map_exp
+  end
+
+  let visit cls ~f term init =
+    enum cls term |> Seq.fold ~init ~f:(fun x t -> f t x)
+
+  let fident t x = x
+
+  class ['a] visitor = object(self)
+    inherit ['a] Bil.exp_visitor
+
+    method enter_term : 't 'p. ('p,'t) cls -> 't term -> 'a -> 'a = fun cls t x -> x
+    method leave_term : 't 'p. ('p,'t) cls -> 't term -> 'a -> 'a = fun cls t x -> x
+    method visit_term : 't 'p. ('p,'t) cls -> 't term -> 'a -> 'a =
+      fun cls t x ->
+        let x = self#enter_term cls t x in
+        switch cls t
+          ~program:(fun t -> self#run t x)
+          ~sub:(fun t -> self#visit_sub t x)
+          ~arg:(fun t -> self#visit_arg t x)
+          ~blk:(fun t -> self#visit_blk t x)
+          ~phi:(fun t -> self#visit_phi t x)
+          ~def:(fun t -> self#visit_def t x)
+          ~jmp:(fun t -> self#visit_jmp t x) |>
+        self#leave_term cls t
+
+    method enter_program p x = x
+    method leave_program p x = x
+
+    method enter_sub sub x = x
+    method leave_sub sub x = x
+
+    method enter_blk blk x = x
+    method leave_blk blk x = x
+
+    method run p x =
+      self#enter_program p x |>
+      visit sub_t ~f:(fun t -> self#visit_term sub_t t) p |>
+      self#leave_program p
+
+    method visit_sub sub x =
+      self#enter_sub sub x |>
+      visit arg_t ~f:(self#visit_term arg_t) sub |>
+      visit blk_t ~f:(self#visit_term blk_t) sub |>
+      self#leave_sub sub
+
+    method visit_blk blk x =
+      self#enter_blk blk x |>
+      visit phi_t ~f:(self#visit_term phi_t) blk |>
+      visit def_t ~f:(self#visit_term def_t) blk |>
+      visit jmp_t ~f:(self#visit_term jmp_t) blk |>
+      self#leave_blk blk
+
+
+    method enter_arg : arg term -> 'a -> 'a = fident
+    method enter_phi : phi term -> 'a -> 'a = fident
+    method enter_def : def term -> 'a -> 'a = fident
+    method enter_jmp : jmp term -> 'a -> 'a = fident
+
+    method leave_arg : arg term -> 'a -> 'a = fident
+    method leave_phi : phi term -> 'a -> 'a = fident
+    method leave_def : def term -> 'a -> 'a = fident
+    method leave_jmp : jmp term -> 'a -> 'a = fident
+
+    method visit_arg arg x =
+      self#enter_arg arg x |>
+      self#visit_var (fst3 arg.self) |>
+      self#visit_exp (snd3 arg.self) |>
+      self#leave_arg arg
+
+    method visit_phi phi x =
+      self#enter_phi phi x |>
+      self#visit_var (fst phi.self) |> fun x ->
+      Map.fold (snd phi.self) ~init:x ~f:(fun ~key ~data x ->
+          self#visit_exp data x) |>
+      self#leave_phi phi
+
+    method visit_def def x =
+      self#enter_def def x |>
+      self#visit_var (fst def.self) |>
+      self#visit_exp (snd def.self) |>
+      self#leave_def def
+
+    method visit_jmp jmp x =
+      self#enter_jmp jmp x |> fun x ->
+      Seq.fold (Ir_jmp.exps jmp) ~init:x ~f:(fun x e ->
+          self#visit_exp e x) |>
+      self#leave_jmp jmp
+  end
+
 end
 
-module Label = struct
-  type t = label
-  let direct x = Direct x
-  let indirect x = Indirect x
-  let create () = direct (Tid.create ())
-  let change ?(direct=ident) ?(indirect=ident) label =
-    match label with
-    | Direct x -> Direct (direct x)
-    | Indirect x -> Indirect (indirect x)
-
-  include Regular.Make(struct
-      type t = label with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Label"
-      let version = "0.1"
-
-      let hash = Hashtbl.hash
-      let pp ppf = function
-        | Indirect exp -> Bap_exp.pp ppf exp
-        | Direct tid -> Format.fprintf ppf "%s" @@ Tid.name tid
-    end)
-end
-
-module Call = struct
-  type t = call
-  let create ?return ~target ()  = {target; return}
-  let return t = t.return
-  let target t = t.target
-  let with_return t return = { t with return = Some return }
-  let with_target t target = { t with target }
-  let with_noreturn t = {t with return = None}
-
-  include Regular.Make(struct
-      type t = call with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Call"
-      let version = "0.1"
-
-
-      let pp_return ppf lab = match lab with
-        | Some label ->
-          Format.fprintf ppf "with return %a" Label.pp label
-        | None -> Format.fprintf ppf "with noreturn"
-
-      let pp ppf c =
-        Format.fprintf ppf "@[call %a %a@]"
-          Label.pp c.target pp_return c.return
-
-      let hash = Hashtbl.hash
-    end)
-end
-
-module Ir_arg = struct
-  type t = arg term
-  let create ?(tid=Tid.create()) ?intent var exp : t =
-    make_term tid (var,exp,intent)
-
-  let lhs t = Tuple3.get1 t.self
-  let rhs t = Tuple3.get2 t.self
-  let intent t = Tuple3.get3 t.self
-  let with_intent (t : t) intent : t = {
-    t with self = Tuple3.map3 t.self ~f:(fun _ -> Some intent)
-  }
-  let with_unknown_intent t : t = {
-    t with self = Tuple3.map3 t.self ~f:(fun _ -> None)
-  }
-  let name arg = Var.name (lhs arg)
-
-  include Regular.Make(struct
-      type t = arg term with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Arg"
-      let version = "0.1"
-
-      let hash = hash_of_term
-
-      let string_of_intent = function
-        | Some In -> "in "
-        | Some Out -> "out "
-        | Some Both -> "in out "
-        | None -> ""
-
-      let pp_self ppf (var,exp,intent) =
-        Format.fprintf ppf "%s :: %s%a = %a"
-          (Var.name var)
-          (string_of_intent intent)
-          Bap_type.pp (Var.typ var)
-          Bap_exp.pp exp
-
-      let pp = Term.pp pp_self
-    end)
-end
-
-
-module Ir_def = struct
-  type t = def term
-  include Leaf
-
-  let map_exp def ~f : def term =
-    with_rhs def (f (rhs def))
-
-  let substitute def x y = map_exp def ~f:(Exp.substitute x y)
-
-  let free_vars def = Exp.free_vars (rhs def)
-
-
-  include Regular.Make(struct
-      type t = def term with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Def"
-      let version = "0.1"
-
-      let hash = hash_of_term
-
-      let pp_self ppf (lhs,rhs) =
-        Format.fprintf ppf "%a := %a" Var.pp lhs Bap_exp.pp rhs
-
-      let pp = Term.pp pp_self
-    end)
-end
-
-module Ir_phi = struct
-  type t = phi term
-  include Leaf
-
-  let of_list ?tid var bs : phi term =
-    create ?tid var (Tid.Map.of_alist_reduce bs ~f:(fun _ x -> x))
-
-  let create ?tid var src exp : phi term = of_list var [src,exp]
-
-  let values (phi : phi term) : (tid * exp) Seq.t =
-    Map.to_sequence (rhs phi)
-
-  let update (phi : phi term) tid exp : phi term =
-    with_rhs phi (Map.add (rhs phi) ~key:tid ~data:exp)
-
-  let remove phi tid : phi term =
-    with_rhs phi (Map.remove (rhs phi) tid)
-
-  let select phi tid : exp option =
-    Map.find (rhs phi) tid
-
-  let select_or_unknown phi tid = match select phi tid with
-    | Some thing -> thing
-    | None ->
-      let name = Format.asprintf "no path from %a" Tid.pp tid in
-      Bap_exp.Exp.unknown name (Var.typ (lhs phi))
-
-  let map_exp phi ~f : phi term =
-    with_rhs phi (Map.map (rhs phi) ~f)
-
-  let substitute phi x y = map_exp phi ~f:(Exp.substitute x y)
-
-  let free_vars phi =
-    values phi |> Seq.fold ~init:Bap_var.Set.empty ~f:(fun vars (_,e) ->
-        Set.union vars (Exp.free_vars e))
-
-  include Regular.Make(struct
-      type t = phi term with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Phi"
-      let version = "0.1"
-
-      let hash = hash_of_term
-
-      let pp_self ppf (lhs,rhs) =
-        Format.fprintf ppf "%a := phi(%s)"
-          Var.pp lhs
-          (String.concat ~sep:", " @@
-           List.map ~f:(fun (id,exp) ->
-               Format.asprintf "[%a, %%%a]" Bap_exp.pp exp Tid.pp id)
-             (Map.to_alist rhs))
-      let pp = Term.pp pp_self
-    end)
-end
-
-module Ir_jmp = struct
-  type t = jmp term
-  include Leaf
-
-  let create_call ?tid ?(cond=always) call =
-    create ?tid cond (Call call)
-
-  let create_goto ?tid ?(cond=always) dest =
-    create ?tid cond (Goto dest)
-
-  let create_ret  ?tid ?(cond=always) dest =
-    create ?tid cond (Ret  dest)
-
-  let create_int  ?tid ?(cond=always) n t  =
-    create ?tid cond (Int (n,t))
-
-  let create      ?tid ?(cond=always) kind =
-    create ?tid cond kind
-
-  let kind = rhs
-  let cond = lhs
-  let with_cond = with_lhs
-  let with_kind = with_rhs
-
-  let exps (jmp : jmp term) : exp Sequence.t =
-    let open Sequence.Generator in
-    let label label = match label with
-      | Indirect exp -> yield exp
-      | Direct _ -> return () in
-    let call call =
-      Option.value_map ~default:(return ())
-        (Call.return call) ~f:label >>= fun () ->
-      label (Call.target call) in
-    let r = match kind jmp with
-      | Call t -> call  t
-      | Goto t | Ret  t -> label t
-      | _ -> return () in
-    run (r >>= fun () -> yield (cond jmp))
-
-  let map_exp (jmp : jmp term) ~f : jmp term =
-    let map_label label = match label with
-      | Indirect exp -> Label.indirect (f exp)
-      | Direct _ -> label in
-    let map_call call : call =
-      let return = Option.map (Call.return call) ~f:map_label in
-      let target = map_label (Call.target call) in
-      Call.create ?return ~target () in
-    let jmp = with_cond jmp (f (cond jmp)) in
-    let kind = match kind jmp with
-      | Call t -> Call (map_call  t)
-      | Goto t -> Goto (map_label t)
-      | Ret  t -> Ret  (map_label t)
-      | Int (_,_) as kind -> kind in
-    with_kind jmp kind
-
-  let substitute jmp x y = map_exp jmp ~f:(Exp.substitute x y)
-
-  let free_vars jmp =
-    exps jmp |> Seq.fold ~init:Bap_var.Set.empty ~f:(fun vars e ->
-        Set.union vars (Exp.free_vars e))
-
-  let eval jmp bili =
-    let eval_label = function
-      | Indirect dst -> bili#eval_jmp (Stmt.jmp dst)
-      | Direct _ -> assert false in
-    match kind jmp with
-    | Goto t -> eval_label t
-    | _ -> assert false
-
-
-  include Regular.Make(struct
-      type t = jmp term with bin_io, compare, sexp
-      let module_name = Some "Bap.Std.Jmp"
-      let version = "0.1"
-
-      let hash = hash_of_term
-
-      let pp_dst ppf = function
-        | Goto dst -> Format.fprintf ppf "goto %a" Label.pp dst
-        | Call sub -> Call.pp ppf sub
-        | Ret  dst -> Format.fprintf ppf "return %a" Label.pp dst
-        | Int (n,t) ->
-          Format.fprintf ppf "interrupt 0x%X return %%%a" n Tid.pp t
-
-      let pp_cond ppf cond =
-        if Exp.(cond <> always) then
-          Format.fprintf ppf "when %a " Bap_exp.pp cond
-
-      let pp_self ppf (lhs,rhs) =
-        Format.fprintf ppf "%a%a" pp_cond lhs pp_dst rhs
-
-      let pp = Term.pp pp_self
-    end)
-end
 
 module Ir_blk = struct
   type t = blk term
@@ -854,7 +1156,7 @@ module Ir_blk = struct
     Term.(after def_t b dominator |> Seq.exists ~f:(fun x -> x.tid = id))
 
   include Regular.Make(struct
-      type t = blk term with bin_io, compare, sexp
+      type t = blk term [@@deriving bin_io, compare, sexp]
       let module_name = Some "Bap.Std.Blk"
       let version = "0.1"
 
@@ -866,7 +1168,7 @@ module Ir_blk = struct
           (Array.pp Ir_def.pp) self.defs
           (Array.pp Ir_jmp.pp) self.jmps
 
-      let pp = Term.pp pp_self
+      let pp = term_pp pp_self
     end)
 end
 
@@ -886,6 +1188,66 @@ module Ir_sub = struct
 
   let name sub = sub.self.name
   let with_name sub name = {sub with self = {sub.self with name}}
+
+  module Enum(T : Bap_value.S) = struct
+    type t = T.t list [@@deriving bin_io, compare,sexp]
+    let pp ppf xs =
+      List.map xs ~f:(Format.asprintf "%a" T.pp) |>
+      String.concat ~sep:", " |>
+      Format.fprintf ppf "%s"
+  end
+
+  module Aliases = Enum(String)
+
+  module Args = struct
+    type t = (arg term, arg term * arg term) Either.t
+      [@@deriving bin_io, compare, sexp]
+    let pp ppf = function
+      | First x -> Format.fprintf ppf "(%s)" (Ir_arg.name x)
+      | Second (x,y) ->
+        Format.fprintf ppf "(%s, %s)" (Ir_arg.name x) (Ir_arg.name y)
+  end
+
+
+  let aliases = Bap_value.Tag.register (module Aliases)
+      ~name:"aliases"
+      ~uuid:"ed73c040-d798-4fc9-96a0-d3c12a870955"
+
+  let const = Bap_value.Tag.register (module Unit)
+      ~name:"const"
+      ~uuid:"b8795164-2e19-4469-9776-d41a6e6afe2e"
+
+  let pure = Bap_value.Tag.register (module Unit)
+      ~name:"pure"
+      ~uuid:"2c477ecb-0de8-4e8e-8cba-052eb67c628a"
+
+  let stub = Bap_value.Tag.register (module Unit)
+      ~name:"stub"
+      ~uuid:"c9eaf8a5-783d-4e01-9bf2-5d012602475f"
+
+  let extern = Bap_value.Tag.register (module Unit)
+      ~name:"extern"
+      ~uuid:"7965a2ee-ae72-4eb6-88c1-6f2b6108915f"
+
+  let leaf = Bap_value.Tag.register (module Unit)
+      ~name:"leaf"
+      ~uuid:"0688a9ac-9e55-4e37-a9e5-ac0a4e4af59e"
+
+  let malloc = Bap_value.Tag.register (module Unit)
+      ~name:"malloc"
+      ~uuid:"b9237d20-07c2-462f-938d-91e4d438fd07"
+
+  let noreturn = Bap_value.Tag.register (module Unit)
+      ~name:"noreturn"
+      ~uuid:"1f2941fb-d227-418d-a1d5-9f9d288a585f"
+
+  let nothrow = Bap_value.Tag.register (module Unit)
+      ~name:"nothrow"
+      ~uuid:"32058b19-95ca-46e3-bee0-d0a3694fd5b1"
+
+  let returns_twice = Bap_value.Tag.register (module Unit)
+      ~name:"returns-twice"
+      ~uuid:"40166004-ea98-431b-81b0-4e74a0b681ee"
 
   module Builder = struct
     type t =
@@ -912,7 +1274,7 @@ module Ir_sub = struct
       make_term tid {name; args; blks}
   end
   include Regular.Make(struct
-      type t = sub term with bin_io, compare, sexp
+      type t = sub term [@@deriving bin_io, compare, sexp]
       let module_name = Some "Bap.Std.Sub"
       let version = "0.1"
 
@@ -926,7 +1288,7 @@ module Ir_sub = struct
           (Array.pp Ir_arg.pp) self.args
           (Array.pp Ir_blk.pp) self.blks
 
-      let pp = Term.pp pp_self
+      let pp = term_pp pp_self
     end)
 end
 
@@ -1018,6 +1380,7 @@ module Ir_program = struct
     | Arg -> finder get_2nd args arg_of_path
     | Sub -> finder get_1st subs sub_of_path
     | Top -> (fun p tid -> Option.some_if (p.tid = tid) p)
+    | Nil -> assert false
 
   let lookup t = finder_of_type t.typ
 
@@ -1053,7 +1416,7 @@ module Ir_program = struct
   end
 
   include Regular.Make(struct
-      type t = program term with bin_io, compare, sexp
+      type t = program term [@@deriving bin_io, compare, sexp]
       let module_name = Some "Bap.Std.Program"
       let version = "0.1"
 
@@ -1061,6 +1424,6 @@ module Ir_program = struct
       let pp_self ppf self =
         Format.fprintf ppf "@[<v>program@.%a@]"
           (Array.pp Ir_sub.pp) self.subs
-      let pp = Term.pp pp_self
+      let pp = term_pp pp_self
     end)
 end

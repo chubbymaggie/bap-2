@@ -13,7 +13,7 @@ open Bap_types.Std
 
 type mem = Bap_memory.t
 
-type 'a t with sexp_of
+type 'a t [@@deriving sexp_of]
 
 (** [empty] map  *)
 val empty : 'a t
@@ -105,3 +105,6 @@ val remove_dominators : 'a t -> mem -> 'a t
 val to_sequence : 'a t -> (mem * 'a) Sequence.t
 
 include Container.S1 with type 'a t := 'a t
+
+
+val pp : (Format.formatter -> 'a -> unit) -> Format.formatter -> 'a t -> unit

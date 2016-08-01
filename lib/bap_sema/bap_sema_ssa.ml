@@ -18,7 +18,7 @@ open Graphlib.Std
 open Format
 open Bap_ir
 
-module Cfg = Graphlib.Tid.Tid
+module Cfg = Bap_tid_graph
 
 
 type state = {
@@ -77,7 +77,7 @@ let blocks_that_define_var var sub : tid list =
     of the variable to a top value of a stack for this variable, if it
     is not empty *)
 let substitute vars = (object
-  inherit Bil.mapper as super
+  inherit Exp.mapper as super
   method! map_sym z =
     match Hashtbl.find vars z with
     | None | Some [] -> z
@@ -187,7 +187,7 @@ let sub sub =
   match Term.first blk_t sub with
   | Some entry when not (is_transformed sub) ->
     let entry = Term.tid entry in
-    let cfg = Graphlib.Ir.create_tid_graph sub in
+    let cfg = Cfg.create sub in
     let cfg,sub,entry =
       if Cfg.Node.degree ~dir:`In entry cfg = 0
       then cfg,sub,entry

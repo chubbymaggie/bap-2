@@ -1,4 +1,5 @@
 open Core_kernel.Std
+open Regular.Std
 open Bap_types.Std
 open Or_error
 
@@ -7,18 +8,18 @@ module Mem = struct
   module T = struct
     type nonrec t = t
 
-    type repr = addr with sexp
+    type repr = addr [@@deriving sexp]
     let repr m = min_addr m
     let compare m1 m2 = Addr.compare (repr m1) (repr m2)
 
-    let sexp_of_t t = <:sexp_of<repr>> (repr t)
+    let sexp_of_t t = [%sexp_of:repr] (repr t)
     let t_of_sexp = opaque_of_sexp
     let hash m = Addr.hash (repr m)
   end
   let sexp_of_t = T.sexp_of_t
-  let to_string mem =
+  let pp ppf mem =
     let a1,a2 = min_addr mem, max_addr mem in
-    Format.asprintf "[%a - %a]" Addr.pp a1 Addr.pp a2
+    Format.fprintf ppf "[%a - %a]" Addr.pp a1 Addr.pp a2
   include Comparable.Make(T)
   include Hashable.Make(T)
 end
@@ -27,7 +28,7 @@ module Bound = struct
   type t =
     | Unbound
     | Bounded of addr * addr
-  with sexp_of
+  [@@deriving sexp_of]
 
   let empty = Unbound
 
@@ -52,15 +53,15 @@ end
 
 module Map = Mem.Map
 
-type mem = Mem.t with sexp_of
+type mem = Mem.t [@@deriving sexp_of]
 
-type 'a map = 'a Map.t with sexp_of
+type 'a map = 'a Map.t [@@deriving sexp_of]
 type 'a hashable = 'a Hashtbl.Hashable.t
 
 type 'a t = {
   map : 'a map;
   bound : Bound.t;
-} with sexp_of
+} [@@deriving sexp_of]
 
 type 'a ranged
   = ?start:mem   (** defaults to the lowest mapped region *)
@@ -84,13 +85,16 @@ let pp_elt f fmt = function
 (** @pre [x <= y] *)
 let intersects x y = Addr.(Mem.max_addr x >= Mem.min_addr y)
 
+let prev_key map key = Map.closest_key map `Less_than key
+let next_key map key = Map.closest_key map `Greater_than key
+
 let has_intersections tab (x : mem) : bool =
   Bound.is_bound tab.bound x &&
   match Map.find tab.map x with
   | Some _ -> true
-  | None -> match Map.prev_key tab.map x with
+  | None -> match prev_key tab.map x with
     | Some (p,_) when intersects p x -> true
-    | _ -> match Map.next_key tab.map x with
+    | _ -> match next_key tab.map x with
       | None -> false
       | Some (n,_) -> intersects x n
 
@@ -103,21 +107,25 @@ let has_intersections tab (x : mem) : bool =
 
     Otherwise, the only solution (other then just reimplementing our
     own tree) is to sequence all keys and return the head.
+
+    TODO: it looks like that a new `closest_key` function is able to
+    find the matching key. So we can reimplement this function more
+    efficiently.
 *)
 let left_bound tab x =
-  let rec search_left p = match Map.prev_key tab.map p with
+  let rec search_left p = match prev_key tab.map p with
     | Some (p,_) when intersects p x -> search_left p
     | _  -> p in
-  if has_intersections tab x then match Map.prev_key tab.map x with
+  if has_intersections tab x then match prev_key tab.map x with
     | Some (p,_) when intersects p x -> Some (search_left p)
     | _ when Map.find tab.map x <> None -> Some x (* see note above*)
-    | _ -> Map.next_key tab.map x |> Option.map ~f:fst
+    | _ -> next_key tab.map x |> Option.map ~f:fst
   else None
 
 let fold_intersections tab x ~init ~f =
   let rec loop (p,d) init =
     let init = f p d init in
-    match Map.next_key tab.map p with
+    match next_key tab.map p with
     | Some (n,d) when intersects x n -> loop (n,d) init
     | _ -> init in
   match left_bound tab x with
@@ -173,8 +181,8 @@ let length tab = Map.length tab.map
 let find tab mem = Map.find tab.map mem
 let mem  tab mem  = Map.mem tab.map mem
 
-let next tab = Map.next_key tab.map
-let prev tab = Map.prev_key tab.map
+let next tab = next_key tab.map
+let prev tab = prev_key tab.map
 
 let min tab = Map.min_elt tab.map
 let max tab = Map.max_elt tab.map
@@ -198,7 +206,8 @@ let foldi ?start ?until (tab : 'a t) ~(init : 'b) ~f : 'b =
         let last,from = from,last in
         let seq =
           Map.to_sequence tab.map
-            ~keys_in:(`Decreasing_order_less_than_or_equal_to from) |>
+            ~order:`Decreasing_key
+            ~keys_less_or_equal_to:from |>
           Seq.take_while ~f:(fun (m,_) -> Mem.(m >= last)) in
         Seq.fold seq ~init ~f:(fun init (addr,x) -> f addr x init)
     | _ -> init
@@ -307,7 +316,7 @@ let make_mapping t map =
   let size = Map.length map in
   let table =
     Hashtbl.create ~growth_allowed:false ~size ~hashable:t () in
-  Map.iter map ~f:(fun ~key:_ ~data:(v1,v2) ->
+  Map.iteri map ~f:(fun ~key:_ ~data:(v1,v2) ->
       Hashtbl.add_exn table ~key:v1 ~data:v2);
   table
 
@@ -334,7 +343,7 @@ let link_many t t1 t2 =
   let size = Map.length t1.map in
   let table =
     Hashtbl.create ~growth_allowed:false ~size ~hashable:t () in
-  Map.iter t1.map ~f:(fun ~key:mem ~data:x ->
+  Map.iteri t1.map ~f:(fun ~key:mem ~data:x ->
       let data = intersections t2 mem |> Seq.map ~f:snd in
       Hashtbl.add_exn table ~key:x ~data);
   fun x -> match Hashtbl.find table x with
@@ -378,7 +387,7 @@ let make_rev_map add find t tab =
   let size = Map.length tab.map in
   let table =
     Hashtbl.create ~growth_allowed:false ~hashable:t ~size () in
-  Map.iter tab.map ~f:(fun ~key:mem ~data:x ->
+  Map.iteri tab.map ~f:(fun ~key:mem ~data:x ->
       add t table ~key:x ~data:mem);
   find t table
 
@@ -417,3 +426,13 @@ let rev_map_exn : type c . (mem,c) r ->
 
 let rev_map ~one_to t tab =
   try_with (fun () -> rev_map_exn one_to t tab)
+
+let pp_comma ppf () =
+  Format.pp_print_string ppf ", "
+
+let pp pp_elem ppf tab =
+  let pp_elem ppf (k,v) =
+    Format.fprintf ppf "%a => %a" Mem.pp k pp_elem v in
+  Seq.pp pp_elem ppf (to_sequence tab)
+
+let () = Pretty_printer.register "Bap.Std.Table.pp"

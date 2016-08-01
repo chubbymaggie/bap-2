@@ -1,39 +1,25 @@
 open Core_kernel.Std
+open Regular.Std
+open Bap_future.Std
 open Bap_types.Std
 open Bap_image_std
 open Bap_disasm_std
 open Bap_sema.Std
+open Bap_event
 
 type t
+type project = t
+type pass [@@deriving sexp_of]
+type input
+type second = float
 
-val from_file :
-  ?on_warning:(Error.t -> unit Or_error.t) ->
-  ?backend:string ->
-  ?name:(addr -> string option) ->
-  ?roots:addr list ->
-  string -> t Or_error.t
-
-val from_image :
-  ?name:(addr -> string option) ->
-  ?roots:addr list ->
-  image -> t Or_error.t
-
-val from_mem :
-  ?name:(addr -> string option) ->
-  ?roots:addr list ->
-  arch -> mem -> t Or_error.t
-
-val from_string :
-  ?base:addr ->
-  ?name:(addr -> string option) ->
-  ?roots:addr list ->
-  arch -> string -> t Or_error.t
-
-val from_bigstring :
-  ?base:addr ->
-  ?name:(addr -> string option) ->
-  ?roots:addr list ->
-  arch -> Bigstring.t -> t Or_error.t
+val create :
+  ?disassembler:string ->
+  ?brancher:brancher source ->
+  ?symbolizer:symbolizer source ->
+  ?rooter:rooter source ->
+  ?reconstructor:reconstructor source ->
+  input -> t Or_error.t
 
 val arch : t -> arch
 val program : t -> program term
@@ -49,26 +35,63 @@ val set : t -> 'a tag -> 'a -> t
 val get : t -> 'a tag -> 'a option
 val has : t -> 'a tag -> bool
 
-type 'a register = ?deps:string list -> string -> 'a -> unit
-type error =
-  | Not_loaded of string
-  | Is_duplicate of string
-  | Not_found of string
-  | Doesn't_register of string
-  | Load_failed of string * Error.t
-  | Runtime_error of string * exn
-with sexp_of
 
-exception Pass_failed of error with sexp
+module Info : sig
+  val file : string stream
+  val arch : arch stream
+  val data : value memmap stream
+  val code : value memmap stream
+  val cfg : cfg stream
+  val symtab : symtab stream
+  val program : program term stream
+end
 
-val register_pass : (t -> t) register
-val register_pass': (t -> unit) register
-val register_pass_with_args : (string array -> t -> t) register
-val register_pass_with_args' : (string array -> t -> unit) register
+module Input : sig
+  type t = input
+  val file : ?loader:string -> filename:string -> t
+  val binary : ?base:addr -> arch -> filename:string -> t
 
-val passes : ?library:string list -> unit -> string list Or_error.t
-val run_pass :
-  ?library:string list -> ?argv:string array -> t -> string -> t Or_error.t
-val passes_exn : ?library:string list -> unit -> string list
-val run_pass_exn : ?library:string list -> ?argv:string array -> t ->
-  string -> t
+  val create : arch -> string -> code:value memmap -> data: value memmap -> t
+  val register_loader : string -> (string -> t) -> unit
+  val available_loaders : unit -> string list
+end
+
+module Pass : sig
+  type t = pass [@@deriving sexp_of]
+
+  type error =
+    | Unsat_dep of pass * string
+    | Runtime_error of pass * exn
+    [@@deriving sexp_of]
+
+  exception Failed of error [@@deriving sexp]
+
+  val run : t -> project -> (project,error) Result.t
+  val run_exn : t -> project -> project
+
+  val name : t -> string
+  val autorun : t -> bool
+
+  val starts    : t -> second stream
+  val finishes  : t -> second stream
+  val successes : t -> second stream
+  val failures  : t -> second stream
+end
+
+
+val find_pass : string -> pass option
+
+val register_pass :
+  ?autorun:bool -> ?runonce:bool -> ?deps:string list -> ?name:string
+  -> (t -> t) -> unit
+val register_pass':
+  ?autorun:bool -> ?runonce:bool -> ?deps:string list -> ?name:string
+  -> (t -> unit) -> unit
+
+
+val pass_registrations : pass stream
+val passes : unit -> pass list
+
+val restore_state : t -> unit
+
+include Data with type t := t
