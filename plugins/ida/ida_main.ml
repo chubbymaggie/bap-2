@@ -11,7 +11,7 @@ include Self()
 
 module Symbols = Data.Make(struct
     type t = (string * int64 * int64) list
-    let version = "0.1"
+    let version = "1.0.0"
   end)
 
 module type Target = sig
@@ -22,13 +22,16 @@ module type Target = sig
   end
 end
 
+let request =
+  sprintf "
+from bap.utils import ida
+ida.service.request(service='%s', output='$output')
+"
+
 let get_symbols =
   Command.create
     `python
-    ~script:"
-from bap.utils.ida import dump_symbol_info
-dump_symbol_info('$output')
-idc.Exit(0)"
+    ~script:(request "symbols")
     ~parser:(fun name ->
         let blk_of_sexp x = [%of_sexp:string*int64*int64] x in
         In_channel.with_file name ~f:(fun ch ->
@@ -60,12 +63,6 @@ let register_source (module T : Target) =
     Stream.merge file arch ~f:extract in
   T.Factory.register name source
 
-let loader_script =
-  {|
-from bap.utils.ida import dump_loader_info
-dump_loader_info('$output')
-idc.Exit(0)
-|}
 
 type perm = [`code | `data] [@@deriving sexp]
 type section = string * perm * int * (int64 * int)
@@ -75,7 +72,7 @@ type image = string * addr_size * section list [@@deriving sexp]
 
 module Img = Data.Make(struct
     type t = image
-    let version = "0.1"
+    let version = "1.0.0"
   end)
 
 
@@ -102,7 +99,7 @@ let read_image name =
       Sexp.input_sexp ch |> image_of_sexp)
 
 let load_image = Command.create `python
-    ~script:loader_script
+    ~script:(request "loader")
     ~parser:read_image
 
 
@@ -178,7 +175,9 @@ let () =
       `S "DESCRIPTION";
       `P "This plugin provides rooter, symbolizer and reconstuctor services.";
       `P "If IDA instance is found on the machine, or specified by a
-        user, it will be queried for the specified information."
+        user, it will be queried for the specified information.";
+      `S "SEE ALSO";
+      `P "$(b,bap-ida)(3), $(b,regular)(3),$(b,bap-plugin-byteweight)(1), $(b,bap-plugin-objdump)(1)"
     ] in
   let path =
     let doc = "Path to IDA directory." in
