@@ -25,7 +25,7 @@ let create_demangler = function
 
 let should_print = function
   | [] -> fun _ -> true
-  | xs -> List.mem xs
+  | xs -> List.mem xs ~equal:String.equal
 
 
 let find_section_for_addr memory addr =
@@ -189,7 +189,7 @@ module Adt = struct
                        | Some name -> Some (name,mem)
                        | None -> None) in
     let pp_section ppf (name,mem) =
-      fprintf ppf {|Section(%S, 0x%s, "|}
+      fprintf ppf {|Section(%S, %s, "|}
         name (Addr.string_of_value (Memory.min_addr mem));
       Memory.iter ~word_size:`r8 mem ~f:(fun byte ->
           fprintf ppf "%a" pp_byte byte);
@@ -198,7 +198,7 @@ module Adt = struct
 
   let pp_memmap ppf memmap =
     let pp_region ppf mem =
-      pr ppf "Region(0x%s,0x%s)"
+      pr ppf "Region(%s,%s)"
         (Addr.string_of_value (Memory.min_addr mem))
         (Addr.string_of_value (Memory.max_addr mem)) in
     let pp_binding ppf (mem,attr) =
